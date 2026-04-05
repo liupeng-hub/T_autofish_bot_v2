@@ -131,6 +131,6 @@ python -m pytest tests/ -v
 
 ## 相关文档
 
-- [autofish_core_design.md](file:///Users/liupeng/Documents/trae_projects/hummingbot_learning/autofish_bot_v2/docs/autofish_core_design.md)
-- [autofish_strategy.md](file:///Users/liupeng/Documents/trae_projects/hummingbot_learning/autofish_bot_v2/docs/autofish_strategy.md)
-- [integration_test.md](file:///Users/liupeng/Documents/trae_projects/hummingbot_learning/autofish_bot_v2/docs/integration_test.md)
+- [autofish_core_design.md](../../docs/20260308_134258_autofish_core_design.md)
+- [autofish_strategy.md](../../docs/20260308_133737_autofish_strategy.md)
+- [integration_test.md](../../docs/20260309_213859_integration_test.md)

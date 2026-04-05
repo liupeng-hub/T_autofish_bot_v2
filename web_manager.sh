@@ -32,12 +32,16 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 LOGS_DIR="$SCRIPT_DIR/logs"
 DB_DIR="$SCRIPT_DIR/database"
 
-# venv 环境（可选）
+# venv 环境
 VENV_DIR="$SCRIPT_DIR/venv"
 VENV_PYTHON="$VENV_DIR/bin/python3"
 
-# 默认使用系统 python3（venv 损坏时跳过）
-PYTHON="python3"
+# 使用 venv Python（如果存在），否则使用系统 python3
+if [ -f "$VENV_PYTHON" ]; then
+    PYTHON="$VENV_PYTHON"
+else
+    PYTHON="python3"
+fi
 
 # 创建 logs 目录
 mkdir -p "$LOGS_DIR"

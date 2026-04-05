@@ -146,6 +146,155 @@ class BacktestEngine:
             weights[i + 1] = w
         return weights
     
+    def _calculate_group_id(self, level: int, group_id: int = None) -> int:
+        """计算订单的 group_id
+        
+        参数:
+            level: 订单层级
+            group_id: 显式传递的 group_id（可选）
+            
+        返回:
+            计算后的 group_id
+        """
+        if group_id is not None:
+            return group_id
+        
+        if level == 1:
+            return self.chain_state.group_id + 1
+        else:
+            return self.chain_state.group_id
+    
+    def _calculate_entry_capital(self, level: int) -> Decimal:
+        """计算入场资金
+        
+        参数:
+            level: 订单层级
+            
+        返回:
+            入场资金金额
+        """
+        if hasattr(self, 'capital_pool') and hasattr(self, 'capital_strategy'):
+            return self.capital_strategy.calculate_entry_capital(
+                self.capital_pool, level, self.chain_state
+            )
+        else:
+            return self.config.get("total_amount_quote", Decimal("1200"))
+    
+    def _create_entry_price_strategy(self):
+        """创建入场价格策略
+        
+        返回:
+            入场价格策略实例
+        """
+        from autofish_core import EntryPriceStrategyFactory
+        
+        strategy_config = self.config.get("entry_price_strategy", {"name": "fixed"})
+        if "strategy" in strategy_config:
+            strategy_name = strategy_config.get("strategy", "fixed")
+            strategy_params = strategy_config.get(strategy_name, {})
+        else:
+            strategy_name = strategy_config.get("name", "fixed")
+            strategy_params = strategy_config.get("params", {})
+        
+        return EntryPriceStrategyFactory.create(strategy_name, **strategy_params)
+    
+    def _calculate_order_params(
+        self,
+        level: int,
+        base_price: Decimal,
+        total_amount: Decimal,
+        weight: Decimal,
+        grid_spacing: Decimal,
+        exit_profit: Decimal,
+        stop_loss: Decimal,
+        strategy,
+        klines: List[Dict] = None
+    ) -> Dict:
+        """计算订单参数
+        
+        参数:
+            level: 订单层级
+            base_price: 基准价格
+            total_amount: 总资金
+            weight: 权重
+            grid_spacing: 网格间距
+            exit_profit: 止盈比例
+            stop_loss: 止损比例
+            strategy: 入场价格策略
+            klines: K线数据
+            
+        返回:
+            订单参数字典
+        """
+        if level == 1:
+            entry_price = strategy.calculate_entry_price(
+                current_price=base_price,
+                level=level,
+                grid_spacing=grid_spacing,
+                klines=klines
+            )
+        else:
+            entry_price = base_price * (Decimal("1") - grid_spacing * level)
+        
+        take_profit_price = entry_price * (Decimal("1") + exit_profit)
+        stop_loss_price = entry_price * (Decimal("1") - stop_loss)
+        stake_amount = total_amount * weight
+        quantity = stake_amount / entry_price
+        
+        return {
+            "entry_price": entry_price,
+            "take_profit_price": take_profit_price,
+            "stop_loss_price": stop_loss_price,
+            "stake_amount": stake_amount,
+            "quantity": quantity
+        }
+    
+    def _build_order_object(
+        self,
+        level: int,
+        params: Dict,
+        group_id: int,
+        kline_time: datetime = None,
+        weight: Decimal = None,
+        strategy_name: str = None
+    ) -> Autofish_Order:
+        """构建订单对象
+        
+        参数:
+            level: 订单层级
+            params: 订单参数字典
+            group_id: 轮次ID
+            kline_time: K线时间
+            weight: 权重（可选）
+            strategy_name: 策略名称（可选）
+            
+        返回:
+            订单对象
+        """
+        creation_time = kline_time.strftime('%Y-%m-%d %H:%M:%S') if kline_time else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        
+        order = Autofish_Order(
+            level=level,
+            entry_price=params["entry_price"],
+            quantity=params["quantity"],
+            stake_amount=params["stake_amount"],
+            take_profit_price=params["take_profit_price"],
+            stop_loss_price=params["stop_loss_price"],
+            state="pending",
+            created_at=creation_time,
+            group_id=group_id,
+        )
+        
+        if weight is not None and strategy_name is not None:
+            logger.info(f"[创建订单] A{level}: entry={params['entry_price']:.2f}, "
+                       f"tp={params['take_profit_price']:.2f}, sl={params['stop_loss_price']:.2f}, "
+                       f"stake={params['stake_amount']:.2f} USDT, qty={params['quantity']:.6f} BTC, "
+                       f"weight={weight:.4f}, strategy={strategy_name}, group_id={group_id}")
+        else:
+            logger.info(f"[创建订单] A{level}: entry={params['entry_price']:.2f}, group_id={group_id}")
+        
+        return order
+    
     def _create_order(self, level: int, base_price: Decimal, klines: List[Dict] = None, group_id: int = None, kline_time: datetime = None) -> Autofish_Order:
         """创建订单
         
@@ -156,29 +305,38 @@ class BacktestEngine:
             group_id: 轮次 ID（可选，如果不传则使用 chain_state.group_id）
             kline_time: K 线时间（用于设置创建时间）
         """
-        from autofish_core import EntryPriceStrategyFactory
-        
         grid_spacing = Decimal(str(self.config.get("grid_spacing", 0.01)))
         exit_profit = Decimal(str(self.config.get("exit_profit", 0.01)))
         stop_loss = Decimal(str(self.config.get("stop_loss", 0.08)))
         
-        # 使用 EntryCapitalStrategy 统一计算入场资金
-        if hasattr(self, 'capital_pool') and hasattr(self, 'capital_strategy'):
-            total_amount = self.capital_strategy.calculate_entry_capital(
-                self.capital_pool, level, self.chain_state
-            )
-        else:
-            # 回退到配置值
-            total_amount = self.config.get("total_amount_quote", Decimal("1200"))
+        actual_group_id = self._calculate_group_id(level, group_id)
+        total_amount = self._calculate_entry_capital(level)
+        strategy = self._create_entry_price_strategy()
         
-        strategy_config = self.config.get("entry_price_strategy", {"name": "fixed"})
-        if "strategy" in strategy_config:
-            strategy_name = strategy_config.get("strategy", "fixed")
-            strategy_params = strategy_config.get(strategy_name, {})
-        else:
-            strategy_name = strategy_config.get("name", "fixed")
-            strategy_params = strategy_config.get("params", {})
-        strategy = EntryPriceStrategyFactory.create(strategy_name, **strategy_params)
+        weights = self._get_weights()
+        
+        if weights and level in weights:
+            weight = weights[level]
+            params = self._calculate_order_params(
+                level=level,
+                base_price=base_price,
+                total_amount=total_amount,
+                weight=weight,
+                grid_spacing=grid_spacing,
+                exit_profit=exit_profit,
+                stop_loss=stop_loss,
+                strategy=strategy,
+                klines=klines
+            )
+            
+            return self._build_order_object(
+                level=level,
+                params=params,
+                group_id=actual_group_id,
+                kline_time=kline_time,
+                weight=weight,
+                strategy_name=strategy.name
+            )
         
         order_calculator = Autofish_OrderCalculator(
             grid_spacing=grid_spacing,
@@ -186,60 +344,9 @@ class BacktestEngine:
             stop_loss=stop_loss
         )
         
-        # 确定 group_id
-        if group_id is None:
-            if level == 1:
-                # A1 订单默认使用 group_id + 1
-                actual_group_id = self.chain_state.group_id + 1
-            else:
-                # A2/A3/A4 订单使用当前 group_id
-                actual_group_id = self.chain_state.group_id
-        else:
-            actual_group_id = group_id
-        
-        weights = self._get_weights()
-        if weights and level in weights:
-            weight = weights[level]
-            stake_amount = total_amount * weight
-            
-            if level == 1:
-                entry_price = strategy.calculate_entry_price(
-                    current_price=base_price,
-                    level=level,
-                    grid_spacing=grid_spacing,
-                    klines=klines
-                )
-            else:
-                entry_price = base_price * (Decimal("1") - grid_spacing * level)
-            
-            take_profit_price = entry_price * (Decimal("1") + exit_profit)
-            stop_loss_price = entry_price * (Decimal("1") - stop_loss)
-            quantity = stake_amount / entry_price
-            
-            # 使用 K 线时间作为创建时间，回退到当前时间
-            creation_time = kline_time.strftime('%Y-%m-%d %H:%M:%S') if kline_time else datetime.now().strftime('%Y-%m-%d %H:%M:%S')
-            
-            order = Autofish_Order(
-                level=level,
-                entry_price=entry_price,
-                quantity=quantity,
-                stake_amount=stake_amount,
-                take_profit_price=take_profit_price,
-                stop_loss_price=stop_loss_price,
-                state="pending",
-                created_at=creation_time,
-                group_id=actual_group_id,
-            )
-            
-            logger.info(f"[创建订单] A{level}: entry={entry_price:.2f}, "
-                       f"tp={take_profit_price:.2f}, sl={stop_loss_price:.2f}, "
-                       f"stake={stake_amount:.2f} USDT, qty={quantity:.6f} BTC, "
-                       f"weight={weight:.4f}, strategy={strategy.name}, group_id={actual_group_id}")
-            
-            return order
-        
         weights_list = [Decimal(str(w)) for w in self.config.get("weights", [])]
         max_entries = self.config.get('max_entries', 4)
+        
         order = order_calculator.create_order(
             level=level,
             base_price=base_price,
@@ -250,6 +357,7 @@ class BacktestEngine:
         )
         order.group_id = actual_group_id
         logger.info(f"[创建订单] A{level}: entry={order.entry_price:.2f}, group_id={actual_group_id}")
+        
         return order
     
     def _process_entry(self, low_price: Decimal, current_price: Decimal, kline_time: datetime = None):
