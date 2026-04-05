@@ -5106,8 +5106,8 @@ class LiveTraderManager:
         return self._traders.copy()
 
     def get_running_sessions(self) -> List[int]:
-        """获取所有运行中的 session_id"""
-        return list(self._traders.keys())
+        """获取所有运行中的 session_id（只返回 running=True 的）"""
+        return [sid for sid, trader in self._traders.items() if getattr(trader, 'running', False)]
 
     async def list_traders(self) -> List[Dict[str, Any]]:
         """获取所有交易实例的信息列表
