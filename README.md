@@ -1,6 +1,6 @@
 # Autofish V2 - 链式挂单策略
 
-基于价格波动幅度概率分布的链式挂单交易策略，集成行情状态检测、可视化分析和行情感知回测功能。
+基于价格波动幅度概率分布的链式挂单交易策略，集成行情状态检测、可视化分析和实盘交易管理功能。
 
 **GitHub 仓库**: https://github.com/liupeng-hub/T_autofish_bot_v2
 
@@ -18,6 +18,7 @@
 | LongPort回测 | `longport_backtest.py` | 港股/美股/A股回测 |
 | LongPort实盘 | `longport_live.py` | 港股/美股/A股实盘 |
 | K线获取 | `binance_kline_fetcher.py` | Binance K线数据获取与缓存 |
+| 参数优化 | `optuna_autofish_optimizer.py` | Optuna参数优化 |
 
 ## 目录结构
 
@@ -33,6 +34,7 @@ T_autofish_bot_v2/
 ├── binance_kline_fetcher.py        # Binance K线数据获取
 ├── longport_backtest.py            # LongPort 回测模块
 ├── longport_live.py                # LongPort 实盘模块
+├── optuna_*.py                     # 参数优化模块
 ├── web_manager.sh                  # Web 服务管理脚本
 ├── requirements.txt                # Python 依赖
 ├── .env                            # 环境变量配置
@@ -45,8 +47,12 @@ T_autofish_bot_v2/
 ├── web/                            # Web 界面
 │   ├── live/                       # 实盘交易界面
 │   ├── test_results/               # 回测结果界面
-│   └── visualizer/                 # 行情可视化界面
+│   ├── visualizer/                 # 行情可视化界面
+│   └── static/                     # 静态资源
 ├── out/                            # 输出目录
+│   └── autofish/                   # 振幅分析输出
+├── tests/                          # 测试文件
+├── scripts/                        # 脚本工具
 ├── docs/                           # 文档目录
 └── README.md                       # 说明文档
 ```
@@ -57,7 +63,7 @@ T_autofish_bot_v2/
 
 ```bash
 # 进入项目目录
-cd /Users/liupeng/Documents/trae_projects/T_autofish_bot_v2
+cd T_autofish_bot_v2
 
 # 创建虚拟环境
 python3 -m venv venv
@@ -68,8 +74,7 @@ source venv/bin/activate
 # 安装依赖
 pip install -r requirements.txt
 
-# 配置环境变量
-cp .env.example .env  # 如果没有 .env 文件
+# 配置环境变量（复制模板或手动创建）
 # 编辑 .env 填入 API Key 等配置
 ```
 
@@ -159,6 +164,17 @@ python binance_kline_fetcher.py --symbol BTCUSDT --interval 1m --status
 python binance_kline_fetcher.py --symbol BTCUSDT --interval 1m --clear
 ```
 
+**命令行参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| --symbol | BTCUSDT | 交易对 |
+| --interval | 1m | K线周期 |
+| --date-range | - | 时间范围（格式: yyyymmdd-yyyymmdd） |
+| --days | - | 获取天数 |
+| --status | - | 查看缓存状态 |
+| --clear | - | 清空缓存 |
+
 **说明**：
 - K 线数据缓存在 `database/klines.db`
 - 支持增量更新，自动检测缺失时间段
@@ -192,12 +208,23 @@ python autofish_core.py --symbol AAPL.US --source longport
 ### 6. 行情状态检测
 
 ```bash
-# 分析最近30天行情
-python market_status_detector.py --symbol BTCUSDT --days 30 --algorithm dual_thrust
+# 分析指定日期范围（必选参数）
+python market_status_detector.py --symbol BTCUSDT --date-range 20200101-20260310
 
-# 分析指定日期范围
-python market_status_detector.py --symbol BTCUSDT --date-range 20200101-20260310 --algorithm improved
+# 使用不同算法
+python market_status_detector.py --symbol BTCUSDT --date-range 20200101-20260310 --algorithm dual_thrust
+python market_status_detector.py --symbol BTCUSDT --date-range 20200101-20260310 --algorithm adx
 ```
+
+**命令行参数**：
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| --symbol | BTCUSDT | 交易对 |
+| --interval | 1d | K线周期 |
+| --date-range | - | 时间范围（格式: yyyymmdd-yyyymmdd）**必选** |
+| --algorithm | improved | 算法名称 |
+| --algorithm-params | - | 算法参数（JSON格式） |
 
 **算法选项**：
 
@@ -207,6 +234,8 @@ python market_status_detector.py --symbol BTCUSDT --date-range 20200101-20260310
 | improved | 改进算法，结合支撑阻力、箱体震荡 |
 | adx | ADX 趋势强度算法 |
 | composite | 综合算法 |
+| realtime | 实时算法 |
+| always_ranging | 始终震荡模式 |
 
 ### 7. 命令行回测
 
@@ -275,6 +304,8 @@ WECHAT_WEBHOOK=your_webhook_url      # Binance 通知
 | live_trades | 成交记录 |
 | live_capital_history | 资金历史 |
 | live_capital_statistics | 资金统计 |
+| live_market_dual_thrust | Dual Thrust 行情数据 |
+| live_market_results | 行情检测结果 |
 
 ### test_results.db - 回测结果数据库
 
@@ -284,7 +315,10 @@ WECHAT_WEBHOOK=your_webhook_url      # Binance 通知
 | test_results | 回测结果 |
 | trade_details | 交易详情 |
 | capital_statistics | 资金统计 |
-| market_visualizer_* | 行情可视化相关表 |
+| capital_history | 资金历史 |
+| market_visualizer_cases | 行情可视化用例 |
+| market_visualizer_results | 行情可视化结果 |
+| optimizer_results | 优化器结果 |
 
 ### klines.db - K线缓存数据库
 
@@ -324,13 +358,13 @@ WECHAT_WEBHOOK=your_webhook_url      # Binance 通知
 
 | 文档 | 说明 |
 |------|------|
-| [市场模块架构说明](docs/market_module_architecture.md) | 核心模块关系与使用场景 |
-| [行情检测器文档](docs/market_status_detector.md) | 行情状态检测算法详解 |
-| [行情可视化设计](docs/market_visualizer_design.md) | 可视化系统设计文档 |
-| [行情感知回测](docs/market_aware_backtest.md) | 行情感知回测引擎文档 |
-| [入场价格策略](docs/entry_price_strategy.md) | 入场价格策略详解 |
-| [实盘交易指南](docs/binance_live_guide.md) | Binance 实盘交易指南 |
-| [交易算法分析](docs/trading_algorithm.md) | 交易算法详细分析 |
+| [市场模块架构说明](docs/20260314_003453_market_module_architecture.md) | 核心模块关系与使用场景 |
+| [行情检测器文档](docs/20260314_003148_market_status_detector.md) | 行情状态检测算法详解 |
+| [行情可视化设计](docs/20260314_003139_market_visualizer_design.md) | 可视化系统设计文档 |
+| [行情感知回测](docs/20260314_003157_market_aware_backtest.md) | 行情感知回测引擎文档 |
+| [入场价格策略](docs/20260308_233616_entry_price_strategy.md) | 入场价格策略详解 |
+| [实盘交易指南](docs/20260327_binance_live_guide.md) | Binance 实盘交易指南 |
+| [交易算法分析](docs/20260326_trading_algorithm.md) | 交易算法详细分析 |
 
 ## 风险提示
 

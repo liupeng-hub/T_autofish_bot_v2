@@ -578,12 +578,11 @@ async def main():
             return
     
     # 获取 K 线
-    await fetcher.fetch_and_cache(
+    await fetcher.fetch_kline(
         symbol=args.symbol,
         interval=args.interval,
         start_time=start_time,
         end_time=end_time,
-        days=args.days,
     )
     
     # 显示最终状态
