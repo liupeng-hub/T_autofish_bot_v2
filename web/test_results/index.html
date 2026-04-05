@@ -2221,12 +2221,14 @@
                         const currentResults = data.data.current_results || {};
 
                         if (status === 'running') {
-                            updateProgressModal('running',
-                                `回测进度: ${progressPct}% (${klineCount.toLocaleString()}/${totalKlines.toLocaleString()} 根K线)\n` +
-                                `已完成 ${currentResults.total_trades || 0} 笔交易`,
-                                tempId,
-                                progressPct
-                            );
+                            let progressText;
+                            if (totalKlines > 0) {
+                                progressText = `回测进度: ${progressPct}% (${klineCount.toLocaleString()}/${totalKlines.toLocaleString()} 根K线)\n` +
+                                    `已完成 ${currentResults.total_trades || 0} 笔交易`;
+                            } else {
+                                progressText = `正在加载K线数据... 已获取 ${klineCount.toLocaleString()} 条`;
+                            }
+                            updateProgressModal('running', progressText, tempId, progressPct);
                         } else if (status === 'completed') {
                             clearInterval(progressInterval);
                             updateProgressModal('completed',

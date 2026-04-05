@@ -1059,7 +1059,9 @@ class MarketAwareBacktestEngine(BacktestEngine):
             start_dt = datetime.fromtimestamp(start_time / 1000)
             end_dt = datetime.fromtimestamp(end_time / 1000)
             print(f"  时间范围: {start_dt.strftime('%Y-%m-%d')} ~ {end_dt.strftime('%Y-%m-%d')}")
-        
+            # 预估K线数量（用于进度显示）
+            self.total_klines = (end_time - start_time) // 60000
+
         klines_1m, klines_1d = await self._fetch_multi_interval_klines(
             symbol, interval, start_time, end_time
         )
