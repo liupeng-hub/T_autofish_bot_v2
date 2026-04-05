@@ -1418,9 +1418,9 @@
             cases.forEach(c => {
                 const row = document.createElement('tr');
                 const statusClass = `status-${c.status}`;
-                const canEdit = ['draft', 'active'].includes(c.status);
-                const canRun = ['draft', 'active'].includes(c.status);
-                const canReset = ['completed', 'running', 'error', 'success'].includes(c.status);
+                const canEdit = ['draft', 'active', 'stopped'].includes(c.status);
+                const canRun = ['draft', 'active', 'stopped'].includes(c.status);
+                const canReset = ['completed', 'running', 'error', 'success', 'stopped'].includes(c.status);
                 
                 row.innerHTML = `
                     <td><small>${c.id}</small></td>
