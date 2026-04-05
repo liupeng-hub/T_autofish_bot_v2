@@ -1010,7 +1010,7 @@
                 baoshou: { withdrawal_threshold: 2.0, withdrawal_retain: 1.5 },
                 wenjian: { withdrawal_threshold: 3.0, withdrawal_retain: 2.0 },
                 jijin: { withdrawal_threshold: 1.5, withdrawal_retain: 1.2 },
-                fuli: { withdrawal_threshold: 999.0, withdrawal_retain: 1.0 }
+                fuli: { withdrawal_threshold: 999999.0, withdrawal_retain: 1.0 }
             }
         };
 
@@ -1248,6 +1248,11 @@
             const max = def.max;
             const paramType = def.type || 'float';
             const description = def.description || name;
+
+            // 未填写时跳过验证（会使用默认值）
+            if (value === undefined || value === null || value === '') {
+                return errors;
+            }
 
             // 类型验证
             if (paramType === 'int' && !Number.isInteger(value)) {
@@ -1778,7 +1783,7 @@
                 'baoshou': { withdrawal_threshold: 2.0, withdrawal_retain: 1.5, desc: '保守策略: 提现阈值 2.0 倍, 保留 1.5 倍' },
                 'wenjian': { withdrawal_threshold: 3.0, withdrawal_retain: 2.0, desc: '稳健策略: 提现阈值 3.0 倍, 保留 2.0 倍' },
                 'jijin': { withdrawal_threshold: 1.5, withdrawal_retain: 1.2, desc: '激进策略: 提现阈值 1.5 倍, 保留 1.2 倍' },
-                'fuli': { withdrawal_threshold: 999.0, withdrawal_retain: 1.0, desc: '复利策略: 永不提现，全量资金复投（参数不可修改）' },
+                'fuli': { withdrawal_threshold: 999999.0, withdrawal_retain: 1.0, desc: '复利策略: 永不提现，全量资金复投（参数不可修改）' },
                 'zidingyi': { withdrawal_threshold: null, withdrawal_retain: null, desc: '自定义策略: 请手动设置提现阈值和保留比例' }
             };
             
