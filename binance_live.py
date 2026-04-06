@@ -908,6 +908,7 @@ class BinanceClient:
             
             if signed:
                 params["timestamp"] = str(int(time.time() * 1000))
+                params["recvWindow"] = "60000"  # 60秒窗口，避免时间偏差错误
                 params["signature"] = self._sign(params)
             
             kwargs = {"params": params, "headers": headers}
@@ -1455,9 +1456,12 @@ class AlgoHandler:
                 logger.info(f"[取消下一级挂单] A{next_order.level}")
             except Exception as e:
                 logger.warning(f"[取消下一级挂单] 失败: {e}")
-            
+
             self.trader.chain_state.orders.remove(next_order)
-        
+            # 删除数据库记录
+            if next_order.order_id:
+                self.trader.db.delete_order(self.trader.session_id, next_order.order_id)
+
         if order.level == 1:
             current_price = await self.trader._get_current_price()
             klines = await self.trader._get_recent_klines()
@@ -1485,9 +1489,12 @@ class AlgoHandler:
                 logger.info(f"[取消下一级挂单] A{next_order.level}")
             except Exception as e:
                 logger.warning(f"[取消下一级挂单] 失败: {e}")
-            
+
             self.trader.chain_state.orders.remove(next_order)
-    
+            # 删除数据库记录
+            if next_order.order_id:
+                self.trader.db.delete_order(self.trader.session_id, next_order.order_id)
+
     def _adjust_order_levels(self) -> None:
         if not self.trader.chain_state:
             return
@@ -1563,6 +1570,9 @@ class AlgoHandler:
             if next_order in self.trader.chain_state.orders:
                 self.trader.chain_state.orders.remove(next_order)
                 logger.info(f"[删除下一级订单] A{next_order.level} 已删除")
+                # 删除数据库记录
+                if next_order.order_id:
+                    self.trader.db.delete_order(self.trader.session_id, next_order.order_id)
         
         self.trader._save_state()
         
@@ -1788,6 +1798,13 @@ class BinanceLiveTrader:
         self.current_market_status: MarketStatus = MarketStatus.UNKNOWN
         self.market_check_interval = self.market_algorithm_params.get("check_interval", 60)
         self.last_market_check_time: Optional[datetime] = None
+
+        # === 行情状态确认机制（避免边界频繁切换） ===
+        self._pending_status: Optional[MarketStatus] = None  # 待确认的状态
+        self._status_confirm_count: int = 0  # 状态确认计数
+        self._status_confirm_threshold: int = 3  # 需要连续确认的次数
+        self._last_status_change_time: Optional[datetime] = None  # 上次状态变化时间
+        self._status_change_min_interval: int = 10  # 状态变化最小间隔（秒）
 
         # === 状态管理 ===
         self.case_id: Optional[int] = None  # 关联的配置 ID（由外部设置）
@@ -3482,6 +3499,13 @@ class BinanceLiveTrader:
                     self.chain_state.orders.remove(order)
                     logger.info(f"[删除订单] A{order.level} (order_id={order.order_id}, state={order.state}) 已从本地删除")
 
+            # 删除数据库中的订单记录
+            if orders_to_remove:
+                order_ids_to_delete = [o.order_id for o in orders_to_remove if o.order_id]
+                if order_ids_to_delete:
+                    self.db.delete_orders_by_ids(self.session_id, order_ids_to_delete)
+                    logger.info(f"[数据库删除] 已删除 {len(order_ids_to_delete)} 个订单记录")
+
             # 注释：移除层级调整，保持原始层级
             # if self.chain_state.orders:
             #     self.chain_state.orders.sort(key=lambda o: o.level)
@@ -4235,8 +4259,8 @@ class BinanceLiveTrader:
 
         try:
             if is_closed:
-                # 日线收盘，重新计算轨道
-                await self._on_daily_kline_closed(kline)
+                # K线收盘，重新计算轨道
+                await self._on_kline_closed(kline)
             else:
                 # 盘中更新，检查突破
                 await self._on_kline_update(kline)
@@ -4244,29 +4268,38 @@ class BinanceLiveTrader:
             logger.error(f"[K线事件] 处理失败: {e}", exc_info=True)
 
     async def _initialize_market_bands(self) -> None:
-        """初始化行情轨道（启动时从历史日线计算）"""
+        """初始化行情轨道（启动时从历史 K线计算）"""
         from binance_kline_fetcher import KlineFetcher
         from datetime import timedelta
 
         logger.info("[行情] 初始化轨道...")
 
-        # 1. 从缓存获取历史日线
+        # 获取算法指定的 K线周期
+        kline_interval = self.market_detector.algorithm.get_kline_interval() if self.market_detector else '1d'
+        logger.info(f"[行情] 使用 K线周期: {kline_interval}")
+
+        # 1. 从缓存获取历史 K线
         fetcher = KlineFetcher()
         n_days = self.market_algorithm_params.get('n_days', 4)
 
-        # 计算时间范围：过去 n_days + 1 天
+        # 根据算法周期计算时间范围
         end_time = int(datetime.now().timestamp() * 1000)
-        start_time = int((datetime.now() - timedelta(days=n_days + 2)).timestamp() * 1000)
+        if kline_interval == '1d':
+            start_time = int((datetime.now() - timedelta(days=n_days + 2)).timestamp() * 1000)
+        elif kline_interval == '1h':
+            start_time = int((datetime.now() - timedelta(hours=n_days * 24 + 48)).timestamp() * 1000)
+        else:
+            start_time = int((datetime.now() - timedelta(days=n_days + 2)).timestamp() * 1000)
 
         klines = await fetcher.fetch_kline(
             symbol=self.symbol,
-            interval='1d',
+            interval=kline_interval,
             start_time=start_time,
             end_time=end_time
         )
 
         if len(klines) < n_days + 1:
-            logger.warning(f"[行情] 日线数据不足: {len(klines)} < {n_days + 1}")
+            logger.warning(f"[行情] K线数据不足: {len(klines)} < {n_days + 1}")
             self.current_market_status = MarketStatus.RANGING
             return
 
@@ -4347,8 +4380,8 @@ class BinanceLiveTrader:
             except Exception as e:
                 logger.error(f"[行情] 保存初始化结果失败: {e}", exc_info=True)
 
-    async def _on_daily_kline_closed(self, kline: Dict) -> None:
-        """日线收盘时重新计算轨道
+    async def _on_kline_closed(self, kline: Dict) -> None:
+        """K线收盘时重新计算轨道
 
         参数:
             kline: 收盘的 K线数据
@@ -4356,25 +4389,32 @@ class BinanceLiveTrader:
         from binance_kline_fetcher import KlineFetcher
         from datetime import timedelta
 
-        logger.info(f"[行情] 日线收盘，重新计算轨道")
+        # 获取算法指定的 K线周期
+        kline_interval = self.market_detector.algorithm.get_kline_interval() if self.market_detector else '1d'
+        logger.info(f"[行情] K线收盘({kline_interval})，重新计算轨道")
 
-        # 1. 从缓存获取历史日线
+        # 1. 从缓存获取历史 K线
         fetcher = KlineFetcher()
         n_days = self.market_algorithm_params.get('n_days', 4)
 
-        # 计算时间范围：过去 n_days + 1 天
+        # 根据算法周期计算时间范围
         end_time = int(datetime.now().timestamp() * 1000)
-        start_time = int((datetime.now() - timedelta(days=n_days + 2)).timestamp() * 1000)
+        if kline_interval == '1d':
+            start_time = int((datetime.now() - timedelta(days=n_days + 2)).timestamp() * 1000)
+        elif kline_interval == '1h':
+            start_time = int((datetime.now() - timedelta(hours=n_days * 24 + 48)).timestamp() * 1000)
+        else:
+            start_time = int((datetime.now() - timedelta(days=n_days + 2)).timestamp() * 1000)
 
         klines = await fetcher.fetch_kline(
             symbol=self.symbol,
-            interval='1d',
+            interval=kline_interval,
             start_time=start_time,
             end_time=end_time
         )
 
         if len(klines) < n_days + 1:
-            logger.warning(f"[行情] 日线数据不足: {len(klines)} < {n_days + 1}")
+            logger.warning(f"[行情] K线数据不足: {len(klines)} < {n_days + 1}")
             return
 
         # 只取最近 n_days + 1 根 K线
@@ -4446,59 +4486,17 @@ class BinanceLiveTrader:
                     f"Lower={self._current_bands.get('lower', 0):.2f}, 状态={result.status.value}")
 
     async def _on_kline_update(self, kline: Dict) -> None:
-        """盘中 K线更新，检查突破
+        """盘中 K线更新
+
+        Dual Thrust 是日线级别算法，盘中不进行状态判断。
+        状态变化只在 K线收盘时触发（_on_kline_closed）。
 
         参数:
             kline: K线数据
         """
-        if not self._current_bands:
-            # 首次需要先计算轨道（可能在启动时还未收到收盘事件）
-            await self._on_daily_kline_closed(kline)
-            return
-
-        current_price = Decimal(str(kline.get('c', 0)))
-        upper = self._current_bands.get('upper')
-        lower = self._current_bands.get('lower')
-
-        if not upper or not lower:
-            return
-
-        # 判断突破
-        old_status = self.current_market_status
-
-        if current_price > Decimal(str(upper)):
-            new_status = MarketStatus.TRENDING_UP
-        elif current_price < Decimal(str(lower)):
-            new_status = MarketStatus.TRENDING_DOWN
-        else:
-            new_status = MarketStatus.RANGING
-
-        # 状态变化时触发回调
-        if new_status != old_status:
-            self.current_market_status = new_status
-            await self._handle_market_status_change(old_status, new_status, current_price)
-
-            # 保存到数据库
-            if self.market_case_id:
-                self.db.save_market_result(
-                    case_id=self.market_case_id,
-                    result={
-                        'check_time': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-                        'market_status': new_status.value,
-                        'confidence': 1.0,
-                        'reason': f"价格突破轨道: {current_price:.2f} vs [{lower:.2f}, {upper:.2f}]",
-                        'event_type': 'breakthrough',
-                        'indicators': {
-                            'upper_band': upper,
-                            'lower_band': lower,
-                            'current_price': float(current_price),
-                        },
-                        'close_price': float(current_price),
-                    }
-                )
-
-            logger.info(f"[行情] 突破检测: 价格={current_price:.2f}, "
-                        f"轨道=[{lower:.2f}, {upper:.2f}], 新状态={new_status.value}")
+        # Dual Thrust 是日线算法，盘中更新不做状态判断
+        # 未来可扩展：记录当日最高/最低价、更新 UI 显示等
+        return
 
     async def _handle_order_update(self, order_data: Dict[str, Any]) -> None:
         """处理订单状态更新
@@ -4637,6 +4635,9 @@ class BinanceLiveTrader:
 
         if self.chain_state and order in self.chain_state.orders:
             self.chain_state.orders.remove(order)
+            # 删除数据库记录
+            if order.order_id:
+                self.db.delete_order(self.session_id, order.order_id)
 
         self._save_state()
     

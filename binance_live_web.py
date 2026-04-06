@@ -1117,8 +1117,9 @@ def create_flask_app():
         4. 启动 trader（会自动执行 _restore_orders）
         """
         try:
-            # 检查是否已在内存中
-            if trader_manager.get_trader(session_id) is not None:
+            # 检查是否已在内存中运行
+            existing_trader = trader_manager.get_trader(session_id)
+            if existing_trader is not None and existing_trader.running:
                 return jsonify({'success': False, 'error': 'Session already running'}), 400
 
             # 创建恢复模式的 trader
