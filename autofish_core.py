@@ -122,6 +122,7 @@ class Autofish_Order:
     group_id: int = 0  # 默认 0，入场时设置
     first_created_at: Optional[str] = None  # 首次挂单时间（用于累计执行时间计算）
     timeout_count: int = 0  # 超时重挂次数
+    db_id: Optional[int] = None  # 数据库主键 ID（保存订单后设置）
     
     def set_state(self, new_state: str, reason: str = ""):
         """设置订单状态"""

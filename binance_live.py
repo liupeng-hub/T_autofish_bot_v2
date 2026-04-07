@@ -2946,9 +2946,9 @@ class BinanceLiveTrader:
 
             # === 保存订单到数据库 ===
             if self.session_id:
-                self.db.save_order(self.session_id, order)
+                order.db_id = self.db.save_order(self.session_id, order)
                 logger.debug(f"[数据库] 保存订单: session_id={self.session_id}, level=A{order.level}, "
-                             f"state={order.state}, orderId={order.order_id}")
+                             f"state={order.state}, orderId={order.order_id}, db_id={order.db_id}")
 
             self._save_state()
         else:
@@ -3328,6 +3328,7 @@ class BinanceLiveTrader:
                     group_id=row['group_id'] if row['group_id'] else 0,
                     created_at=row['created_at'],
                     filled_at=row['filled_at'],
+                    db_id=row['id'],  # 恢复数据库主键 ID
                 )
                 orders.append(order)
 

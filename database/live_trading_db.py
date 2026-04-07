@@ -1215,9 +1215,17 @@ class LiveTradingDB:
 
     def save_trade(self, session_id: int, order: Any, trade_type: str,
                    leverage: int = 10, holding_duration: int = 0) -> int:
-        """保存交易记录"""
+        """保存交易记录
+
+        注意：order_id 应使用数据库主键 ID (order.db_id)，而非 Binance orderId
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
+
+        # 使用数据库主键 ID
+        db_id = getattr(order, 'db_id', None) or 0
+        if db_id == 0:
+            logger.warning(f"[数据库] save_trade: order.db_id 为空，无法建立外键关联，level={order.level}")
 
         try:
             cursor.execute("""
@@ -1228,7 +1236,7 @@ class LiveTradingDB:
                 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_id,
-                order.order_id or 0,
+                db_id,  # 使用数据库主键 ID，而非 Binance orderId
                 trade_type,
                 order.level,
                 float(order.entry_price),
