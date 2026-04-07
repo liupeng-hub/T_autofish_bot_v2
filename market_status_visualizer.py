@@ -1790,7 +1790,7 @@ def main():
                         choices=['dual_thrust', 'improved', 'always_ranging', 'composite', 'adx', 'realtime'],
                         help='行情判断算法')
     parser.add_argument('--algorithm-params', type=str, default=None, help='算法参数 (JSON格式)')
-    parser.add_argument('--output-dir', default='out/market_visualizer', help='输出目录')
+    parser.add_argument('--output-dir', default=None, help='输出目录 (默认: out/test_report/visualizer)')
     parser.add_argument('--generate-all', action='store_true', help='生成所有文件(MD+PNG+HTML)')
     
     args = parser.parse_args()

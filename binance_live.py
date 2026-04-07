@@ -710,17 +710,27 @@ def notify_startup(config: dict, current_price: Decimal, session_id: int, db):
     send_wechat_notification("🚀 Autofish V2 启动", content, session_id, db, "startup")
 
 
-def notify_critical_error(error_msg: str, config: dict, session_id: int, db):
-    """发送严重错误通知"""
+def notify_critical_error(error_msg: str, config: dict, session_id: int, db, is_exiting: bool = False):
+    """发送严重错误通知
+
+    参数:
+        error_msg: 错误信息
+        config: 配置
+        session_id: 会话ID
+        db: 数据库
+        is_exiting: 是否即将退出（False 表示还在重试）
+    """
     symbol = config.get('symbol', 'BTCUSDT')
+    status = "程序强制退出" if is_exiting else "正在重试..."
     content = dedent(f"""
         > **错误类型**: 严重错误
         > **交易标的**: {symbol}
         > **错误信息**: {error_msg}
-        > **状态**: 程序强制退出
+        > **状态**: {status}
         > **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
     """).strip()
-    send_wechat_notification("🚨 Autofish V2 严重错误", content, session_id, db, "error")
+    title = "🚨 Autofish V2 严重错误" if is_exiting else "⚠️ Autofish V2 运行异常"
+    send_wechat_notification(title, content, session_id, db, "error")
 
 
 def notify_warning(warning_msg: str, config: dict, session_id: int, db):
@@ -843,10 +853,16 @@ class BinanceClient:
     
     async def _get_session(self) -> aiohttp.ClientSession:
         if self.session is None or self.session.closed:
+            # 创建自定义超时配置，增加 SSL 握手超时
+            timeout = aiohttp.ClientTimeout(
+                total=60,        # 总超时 60 秒
+                connect=30,      # 连接超时 30 秒
+                sock_connect=60  # SSL 握手超时 60 秒
+            )
             connector = None
             if self.proxy:
                 connector = aiohttp.TCPConnector(ssl=False)
-            self.session = aiohttp.ClientSession(connector=connector)
+            self.session = aiohttp.ClientSession(connector=connector, timeout=timeout)
         return self.session
     
     def _sign(self, params: Dict[str, Any]) -> str:
@@ -2268,7 +2284,7 @@ class BinanceLiveTrader:
             logger.error(f"[预检查] 配置不满足最小金额要求，程序退出 - 当前资金: {check_result['total_amount']} USDT，需要: {suggested_min_ceil} USDT")
             
             error_msg = f"总资金 {check_result['total_amount']} USDT 不满足最小金额要求，建议最小总资金: {suggested_min_ceil} USDT"
-            notify_critical_error(error_msg, self.config, self.session_id, self.db)
+            notify_critical_error(error_msg, self.config, self.session_id, self.db, is_exiting=True)
             
             print(f"\n{'='*60}")
             print(f"❌ 配置预检查失败，程序退出")
@@ -4017,10 +4033,11 @@ class BinanceLiveTrader:
                         keepalive_task = asyncio.create_task(self._keepalive_loop())
                         
                         try:
-                            while self.running:
+                            need_reconnect = False  # 标记是否需要重连
+                            while self.running and self.ws_connected:
                                 try:
                                     msg = await asyncio.wait_for(ws.receive(), timeout=1.0)
-                                    
+
                                     if msg.type == aiohttp.WSMsgType.TEXT:
                                         data = json.loads(msg.data)
                                         await self._handle_ws_message(data)
@@ -4037,7 +4054,15 @@ class BinanceLiveTrader:
                                     continue
                         finally:
                             keepalive_task.cancel()
+                            # 标记是否需要重连（listenKey 失效但程序仍在运行）
+                            need_reconnect = not self.ws_connected and self.running
                             self.ws_connected = False
+
+                        # listenKey 失效需要重连
+                        if need_reconnect:
+                            logger.info("[WebSocket] listenKey 失效，准备重连...")
+                            await asyncio.sleep(2)
+                            continue  # 继续外层循环，重新创建 listen_key 并连接
                         
                         if not self.running:
                             await self._handle_exit("用户停止")
@@ -4069,72 +4094,7 @@ class BinanceLiveTrader:
                         await asyncio.sleep(10)
         finally:
             await self.client.close()
-    
-    async def _ws_loop(self) -> None:
-        """WebSocket 主循环
-        
-        建立 WebSocket 连接，监听用户数据流事件：
-        - ORDER_TRADE_UPDATE: 订单状态变化
-        - listenKeyExpired: listen key 过期
-        
-        支持自动重连，最多重连 10 次。
-        
-        副作用:
-            - 更新订单状态
-            - 触发止盈止损处理
-            - 发送通知
-        """
-        max_reconnect_attempts = 10
-        reconnect_attempts = 0
-        
-        while self.running and reconnect_attempts < max_reconnect_attempts:
-            try:
-                listen_key = await self.client.create_listen_key()
-                ws_url = f"{self.client.ws_url}/{listen_key}"
-                
-                session = await self.client._get_session()
-                
-                ws_kwargs = {}
-                if self.client.proxy:
-                    ws_kwargs["proxy"] = self.client.proxy
-                
-                async with session.ws_connect(ws_url, **ws_kwargs) as ws:
-                    self.ws = ws
-                    self.ws_connected = True
-                    reconnect_attempts = 0
-                    
-                    logger.info("[WebSocket] 连接成功")
-                    
-                    keepalive_task = asyncio.create_task(self._keepalive_loop())
-                    
-                    try:
-                        while self.running:
-                            try:
-                                msg = await asyncio.wait_for(ws.receive(), timeout=1.0)
-                                
-                                if msg.type == aiohttp.WSMsgType.TEXT:
-                                    data = json.loads(msg.data)
-                                    await self._handle_ws_message(data)
-                                elif msg.type == aiohttp.WSMsgType.ERROR:
-                                    logger.error(f"[WebSocket] 错误: {ws.exception()}")
-                                    break
-                                elif msg.type in [aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.CLOSING]:
-                                    logger.info("[WebSocket] 连接关闭")
-                                    break
-                            except asyncio.TimeoutError:
-                                continue
-                    finally:
-                        keepalive_task.cancel()
-                        self.ws_connected = False
-            
-            except Exception as e:
-                self.ws_connected = False
-                reconnect_attempts += 1
-                logger.error(f"[WebSocket] 连接错误: {e}", exc_info=True)
-                
-                if reconnect_attempts < max_reconnect_attempts:
-                    await asyncio.sleep(5)
-    
+
     async def _keepalive_loop(self) -> None:
         while self.running and self.ws_connected:
             try:
@@ -4142,9 +4102,15 @@ class BinanceLiveTrader:
                 await self.client.keepalive_listen_key()
                 logger.info("[WebSocket] listen key 已续期")
             except asyncio.CancelledError:
-                break
+                    logger.debug("[WebSocket] keepalive 任务被取消")
+                    break
             except Exception as e:
                 logger.warning(f"[WebSocket] 续期失败: {e}")
+                # listenKey 不存在或过期，需要重连
+                if "does not exist" in str(e) or "expired" in str(e).lower():
+                    logger.error("[WebSocket] listenKey 失效，触发重连")
+                    self.ws_connected = False
+                    break
     
     async def _handle_ws_message(self, data: Dict[str, Any]) -> None:
         """处理 WebSocket 消息
