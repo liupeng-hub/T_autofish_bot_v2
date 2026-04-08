@@ -332,6 +332,7 @@ class LiveTradingDB:
             CREATE TABLE IF NOT EXISTS live_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 session_id INTEGER NOT NULL,
+                order_seq_id INTEGER NOT NULL,
                 order_id INTEGER NOT NULL,
                 trade_type TEXT,
                 level INTEGER DEFAULT 1,
@@ -344,7 +345,8 @@ class LiveTradingDB:
                 exit_time TEXT,
                 holding_duration_seconds INTEGER DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES live_sessions(id) ON DELETE CASCADE,
-                FOREIGN KEY (order_id) REFERENCES live_orders(id)
+                FOREIGN KEY (order_seq_id) REFERENCES live_orders(id),
+                FOREIGN KEY (order_id) REFERENCES live_orders(order_id)
             )
         """)
 
@@ -1217,26 +1219,31 @@ class LiveTradingDB:
                    leverage: int = 10, holding_duration: int = 0) -> int:
         """保存交易记录
 
-        注意：order_id 应使用数据库主键 ID (order.db_id)，而非 Binance orderId
+        字段说明:
+            order_seq_id: 数据库主键 ID (live_orders.id)
+            order_id: Binance orderId (live_orders.order_id)
         """
         conn = self._get_connection()
         cursor = conn.cursor()
 
-        # 使用数据库主键 ID
+        # 获取数据库主键 ID 和 Binance orderId
         db_id = getattr(order, 'db_id', None) or 0
+        binance_order_id = getattr(order, 'order_id', None) or 0
+
         if db_id == 0:
-            logger.warning(f"[数据库] save_trade: order.db_id 为空，无法建立外键关联，level={order.level}")
+            logger.warning(f"[数据库] save_trade: order.db_id 为空，无法建立主键关联，level={order.level}")
 
         try:
             cursor.execute("""
                 INSERT INTO live_trades (
-                    session_id, order_id, trade_type, level,
+                    session_id, order_seq_id, order_id, trade_type, level,
                     entry_price, exit_price, quantity, profit,
                     leverage, entry_time, exit_time, holding_duration_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_id,
-                db_id,  # 使用数据库主键 ID，而非 Binance orderId
+                db_id,           # order_seq_id: 数据库主键
+                binance_order_id, # order_id: Binance orderId
                 trade_type,
                 order.level,
                 float(order.entry_price),
