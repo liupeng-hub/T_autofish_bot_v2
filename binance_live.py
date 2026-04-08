@@ -947,9 +947,9 @@ class BinanceClient:
                 else:
                     raise ValueError(f"Unsupported HTTP method: {method}")
                 
-                if "code" in data and data["code"] != 200:
+                if "code" in data and int(data["code"]) != 200:
                     raise BinanceAPIError(
-                        code=data.get("code", -1),
+                        code=int(data.get("code", -1)),
                         message=data.get("msg", "Unknown error"),
                         response=data
                     )
