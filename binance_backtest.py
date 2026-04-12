@@ -208,23 +208,28 @@ class BacktestEngine:
         exit_profit: Decimal,
         stop_loss: Decimal,
         strategy,
+        leverage: Decimal = Decimal("10"),
         klines: List[Dict] = None
     ) -> Dict:
         """计算订单参数
-        
+
         参数:
             level: 订单层级
             base_price: 基准价格
-            total_amount: 总资金
+            total_amount: 总保证金
             weight: 权重
             grid_spacing: 网格间距
             exit_profit: 止盈比例
             stop_loss: 止损比例
             strategy: 入场价格策略
+            leverage: 杠杆倍数
             klines: K线数据
-            
+
         返回:
             订单参数字典
+
+        注意:
+            stake_amount 是保证金金额，quantity = stake_amount × leverage / entry_price
         """
         if level == 1:
             entry_price = strategy.calculate_entry_price(
@@ -235,12 +240,13 @@ class BacktestEngine:
             )
         else:
             entry_price = base_price * (Decimal("1") - grid_spacing * level)
-        
+
         take_profit_price = entry_price * (Decimal("1") + exit_profit)
         stop_loss_price = entry_price * (Decimal("1") - stop_loss)
         stake_amount = total_amount * weight
-        quantity = stake_amount / entry_price
-        
+        # 数量 = 保证金 × 杠杆 / 入场价（名义价值 / 价格）
+        quantity = stake_amount * leverage / entry_price
+
         return {
             "entry_price": entry_price,
             "take_profit_price": take_profit_price,
@@ -326,6 +332,7 @@ class BacktestEngine:
                 exit_profit=exit_profit,
                 stop_loss=stop_loss,
                 strategy=strategy,
+                leverage=Decimal(str(self.leverage)),
                 klines=klines
             )
             
@@ -1075,10 +1082,22 @@ class MarketAwareBacktestEngine(BacktestEngine):
         self.chain_state.cancel_pending_orders()
         self.chain_state.orders = []
     
-    def _calculate_profit(self, order: Autofish_Order, close_price: Decimal, leverage: Decimal) -> Decimal:
-        """计算盈亏"""
-        price_diff = close_price - order.entry_price
-        profit = price_diff * order.quantity * leverage
+    def _calculate_profit(self, order: Autofish_Order, close_price: Decimal, leverage: Decimal = None) -> Decimal:
+        """计算盈亏
+
+        参数:
+            order: 订单对象
+            close_price: 平仓价格
+            leverage: 杠杆（已废弃，保留参数兼容性）
+
+        返回:
+            盈亏金额
+
+        注意:
+            quantity 已包含杠杆效应 (quantity = margin × leverage / price)
+            所以盈亏 = (close - entry) × quantity
+        """
+        profit = (close_price - order.entry_price) * order.quantity
         return profit
     
     def _create_first_order(self, price: Decimal, kline: dict = None):

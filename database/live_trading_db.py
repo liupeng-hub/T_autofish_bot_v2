@@ -1702,13 +1702,8 @@ class LiveTradingDB:
         """获取所有活跃会话"""
         return self.list_sessions(filters={'status': 'running'})
 
-    def get_statistics_summary(self, symbol: str = None, include_running: bool = True) -> Dict:
-        """获取资金统计汇总
-
-        参数:
-            symbol: 交易对筛选
-            include_running: 是否包含运行中的会话（默认 True，首页需要显示所有会话）
-        """
+    def get_statistics_summary(self, symbol: str = None) -> Dict:
+        """获取资金统计汇总"""
         conn = self._get_connection()
         cursor = conn.cursor()
 
@@ -1730,15 +1725,8 @@ class LiveTradingDB:
             """
             params = []
 
-            # 状态筛选：默认包含所有状态，可选只统计已停止的
-            if not include_running:
-                sql += " WHERE s.status = 'stopped'"
-
             if symbol:
-                if not include_running:
-                    sql += " AND s.symbol = ?"
-                else:
-                    sql += " WHERE s.symbol = ?"
+                sql += " WHERE s.symbol = ?"
                 params.append(symbol)
 
             cursor.execute(sql, params)

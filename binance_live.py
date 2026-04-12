@@ -311,8 +311,8 @@ class NotificationTemplate:
         return dedent(f"""\
             > **层级**: {self.format_level(order.level)}
             > **入场价**: {order.entry_price:.2f} USDT
-            > **数量**: {order.quantity:.6f} BTC
-            > **金额**: {order.stake_amount:.2f} USDT""").strip()
+            > **数量**: {order.quantity:.6f}
+            > **保证金**: {order.stake_amount:.2f} USDT""").strip()
     
     def format_order_prices(self, order) -> str:
         return dedent(f"""\
@@ -435,8 +435,8 @@ def notify_entry_order(order, config: dict, session_id: int, db):
     content = dedent(f"""\
         > **层级**: A{order.level} (第{order.level}层/共{max_entries}层)
         > **入场价**: {order.entry_price:.2f} USDT
-        > **数量**: {order.quantity:.6f} BTC
-        > **金额**: {order.stake_amount:.2f} USDT
+        > **数量**: {order.quantity:.6f}
+        > **保证金**: {order.stake_amount:.2f} USDT
         > **止盈价**: {order.take_profit_price:.2f} USDT (+{float(config.get('exit_profit', Decimal('0.01')))*100:.1f}%)
         > **止损价**: {order.stop_loss_price:.2f} USDT (-{float(config.get('stop_loss', Decimal('0.08')))*100:.1f}%)
         > **订单ID**: {order.order_id}
@@ -450,8 +450,8 @@ def notify_entry_order_supplement(order, config: dict, session_id: int, db):
     content = dedent(f"""\
         > **层级**: A{order.level} (第{order.level}层/共{max_entries}层)
         > **入场价**: {order.entry_price:.2f} USDT
-        > **数量**: {order.quantity:.6f} BTC
-        > **金额**: {order.stake_amount:.2f} USDT
+        > **数量**: {order.quantity:.6f}
+        > **保证金**: {order.stake_amount:.2f} USDT
         > **止盈价**: {order.take_profit_price:.2f} USDT (+{float(config.get('exit_profit', Decimal('0.01')))*100:.1f}%)
         > **止损价**: {order.stop_loss_price:.2f} USDT (-{float(config.get('stop_loss', Decimal('0.08')))*100:.1f}%)
         > **订单ID**: {order.order_id}
@@ -465,8 +465,8 @@ def notify_entry_filled(order, filled_price: Decimal, commission: Decimal, confi
     content = dedent(f"""
             > **层级**: A{order.level} (第{order.level}层/共{max_entries}层)
             > **成交价**: {filled_price:.2f} USDT
-            > **数量**: {order.quantity:.6f} BTC
-            > **金额**: {order.stake_amount:.2f} USDT
+            > **数量**: {order.quantity:.6f}
+            > **保证金**: {order.stake_amount:.2f} USDT
             > **止盈价**: {order.take_profit_price:.2f} USDT (+{float(config.get('exit_profit', Decimal('0.01')))*100:.1f}%)
             > **止损价**: {order.stop_loss_price:.2f} USDT (-{float(config.get('stop_loss', Decimal('0.08')))*100:.1f}%)
             > **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -478,6 +478,8 @@ def notify_take_profit(order, profit: Decimal, config: dict, session_id: int, db
     max_entries = config.get('max_entries', 4)
     content = dedent(f"""
             > **层级**: A{order.level} (第{order.level}层/共{max_entries}层)
+            > **数量**: {order.quantity:.6f}
+            > **保证金**: {order.stake_amount:.2f} USDT
             > **止盈价**: {order.take_profit_price:.2f} USDT
             > **盈亏**: +{profit:.2f} USDT
             > **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
@@ -487,10 +489,13 @@ def notify_take_profit(order, profit: Decimal, config: dict, session_id: int, db
 
 def notify_stop_loss(order, profit: Decimal, config: dict, session_id: int, db):
     max_entries = config.get('max_entries', 4)
+    profit_text = f"+{profit:.2f}" if profit >= 0 else f"{profit:.2f}"
     content = dedent(f"""
             > **层级**: A{order.level} (第{order.level}层/共{max_entries}层)
+            > **数量**: {order.quantity:.6f}
+            > **保证金**: {order.stake_amount:.2f} USDT
             > **止损价**: {order.stop_loss_price:.2f} USDT
-            > **盈亏**: {profit:.2f} USDT
+            > **盈亏**: {profit_text} USDT
             > **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
         """).strip()
     send_wechat_notification(f"🛑 止损触发 A{order.level}", content, session_id, db, "stop_loss")
@@ -535,11 +540,13 @@ def notify_orders_recovered(orders: list, config: dict, current_price: Decimal, 
     for order in orders:
         state_text = state_map.get(order.state, order.state)
         level_text = f"第{order.level}层/共{max_entries}层"
-        
+
         if order.state == 'pending':
             order_lines.append(dedent(f"""\
                 **A{order.level}** `{state_text}` `{level_text}`
                 > 入场价: {order.entry_price:.2f} USDT
+                > 数量: {order.quantity:.6f}
+                > 保证金: {order.stake_amount:.2f} USDT
                 > 止盈价: {order.take_profit_price:.2f} USDT (+{exit_profit_pct:.1f}%)
                 > 止损价: {order.stop_loss_price:.2f} USDT (-{stop_loss_pct:.1f}%)
                 > 订单ID: {order.order_id}"""))
@@ -549,13 +556,15 @@ def notify_orders_recovered(orders: list, config: dict, current_price: Decimal, 
                 extra_lines.append(f"> 止盈ID: {order.tp_order_id}（补）")
             if order.sl_supplemented and order.sl_order_id:
                 extra_lines.append(f"> 止损ID: {order.sl_order_id}（补）")
-            
+
             order_lines.append(dedent(f"""\
                 **A{order.level}** `{state_text}` `{level_text}`
                 > 入场价: {order.entry_price:.2f} USDT
+                > 数量: {order.quantity:.6f}
+                > 保证金: {order.stake_amount:.2f} USDT
                 > 止盈价: {order.take_profit_price:.2f} USDT (+{exit_profit_pct:.1f}%)
                 > 止损价: {order.stop_loss_price:.2f} USDT (-{stop_loss_pct:.1f}%)"""))
-            
+
             if extra_lines:
                 order_lines[-1] += "\n" + "\n".join(extra_lines)
         elif order.state == 'closed':
@@ -564,6 +573,7 @@ def notify_orders_recovered(orders: list, config: dict, current_price: Decimal, 
             order_lines.append(dedent(f"""\
                 **A{order.level}** `{state_text}` `{level_text}` ({close_reason})
                 > 入场价: {order.entry_price:.2f} USDT
+                > 保证金: {order.stake_amount:.2f} USDT
                 > 盈亏: {profit_text} USDT"""))
         else:
             order_lines.append(dedent(f"""\
@@ -636,8 +646,8 @@ def notify_exit(reason: str, config: dict, session_id: int, db, cancelled_orders
             content_lines.append(dedent(f"""\
                 **A{order.level}** `已取消` `{level_text}`
                 > 入场价: {order.entry_price:.2f} USDT
-                > 金额: {order.stake_amount:.2f} USDT
-                > 数量: {order.quantity:.6f} BTC
+                > 保证金: {order.stake_amount:.2f} USDT
+                > 数量: {order.quantity:.6f}
                 > 订单ID: {order.order_id}"""))
     
     filled_orders = [o for o in (remaining_orders or []) if o.state == "filled"]
@@ -654,6 +664,8 @@ def notify_exit(reason: str, config: dict, session_id: int, db, cancelled_orders
             content_lines.append(dedent(f"""\
                 **A{order.level}** `{state_text}` `{level_text}`
                 > 入场价: {order.entry_price:.2f} USDT
+                > 数量: {order.quantity:.6f}
+                > 保证金: {order.stake_amount:.2f} USDT
                 > 止盈价: {order.take_profit_price:.2f} USDT (+{exit_profit_pct:.1f}%)
                 > 止损价: {order.stop_loss_price:.2f} USDT (-{stop_loss_pct:.1f}%)"""))
     
@@ -763,11 +775,12 @@ def notify_first_entry_timeout_refresh(old_order, new_order: dict, current_price
     """发送第一笔入场订单超时重挂通知"""
     symbol = config.get('symbol', 'BTCUSDT')
     max_entries = config.get('max_entries', 4)
-    
+
     old_entry = old_order.get('entry_price', 0) if isinstance(old_order, dict) else getattr(old_order, 'entry_price', 0)
     old_order_id = old_order.get('order_id', 'N/A') if isinstance(old_order, dict) else getattr(old_order, 'order_id', 'N/A')
     old_created = old_order.get('created_at', 'N/A') if isinstance(old_order, dict) else getattr(old_order, 'created_at', 'N/A')
-    
+    old_stake = old_order.get('stake_amount', 0) if isinstance(old_order, dict) else getattr(old_order, 'stake_amount', 0)
+
     new_entry = new_order.get('entry_price', 0) if isinstance(new_order, dict) else getattr(new_order, 'entry_price', 0)
     new_order_id = new_order.get('order_id', 'N/A') if isinstance(new_order, dict) else getattr(new_order, 'order_id', 'N/A')
     new_quantity = new_order.get('quantity', 0) if isinstance(new_order, dict) else getattr(new_order, 'quantity', 0)
@@ -775,28 +788,29 @@ def notify_first_entry_timeout_refresh(old_order, new_order: dict, current_price
     new_tp = new_order.get('take_profit_price', 0) if isinstance(new_order, dict) else getattr(new_order, 'take_profit_price', 0)
     new_sl = new_order.get('stop_loss_price', 0) if isinstance(new_order, dict) else getattr(new_order, 'stop_loss_price', 0)
     new_level = new_order.get('level', 1) if isinstance(new_order, dict) else getattr(new_order, 'level', 1)
-    
+
     price_diff = abs(float(new_entry) - float(old_entry))
     price_diff_pct = price_diff / float(old_entry) * 100 if float(old_entry) > 0 else 0
-    
+
     content = dedent(f"""\
         > **层级**: A{new_level} (第{new_level}层/共{max_entries}层)
         > **触发原因**: A1 挂单超过 {timeout_minutes} 分钟未成交
         > **当前价格**: {float(current_price):.2f} USDT
-        > 
+        >
         > **原订单**:
         >   入场价: {float(old_entry):.2f} USDT
+        >   保证金: {float(old_stake):.2f} USDT
         >   订单ID: {old_order_id}
         >   创建时间: {old_created}
-        > 
+        >
         > **新订单**:
         >   入场价: {float(new_entry):.2f} USDT
-        >   数量: {float(new_quantity):.6f} BTC
-        >   金额: {float(new_stake):.2f} USDT
+        >   数量: {float(new_quantity):.6f}
+        >   保证金: {float(new_stake):.2f} USDT
         >   止盈价: {float(new_tp):.2f} USDT (+{float(config.get('exit_profit', Decimal('0.01')))*100:.1f}%)
         >   止损价: {float(new_sl):.2f} USDT (-{float(config.get('stop_loss', Decimal('0.08')))*100:.1f}%)
         >   订单ID: {new_order_id}
-        > 
+        >
         > **价格调整**: {price_diff:.2f} ({price_diff_pct:.2f}%)
         > **时间**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}""").strip()
     send_wechat_notification(f"⏰ A1 超时重挂", content, session_id, db, "timeout")
@@ -1268,9 +1282,10 @@ class AlgoHandler:
             order.closed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             order.close_price = order.take_profit_price
 
-            # === 计算盈亏（含杠杆）===
-            leverage = self.trader.config.get('leverage', 10)
-            profit = (order.take_profit_price - order.entry_price) * order.quantity * leverage
+            # === 计算盈亏 ===
+            # 盈亏 = (出场价 - 入场价) × 数量
+            # 注意：quantity 已包含杠杆效应 (quantity = margin × leverage / price)
+            profit = (order.take_profit_price - order.entry_price) * order.quantity
             order.profit = profit
 
             # 订单状态变更日志
@@ -1370,9 +1385,10 @@ class AlgoHandler:
             order.closed_at = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
             order.close_price = order.stop_loss_price
 
-            # === 计算盈亏（含杠杆）===
-            leverage = self.trader.config.get('leverage', 10)
-            profit = (order.stop_loss_price - order.entry_price) * order.quantity * leverage
+            # === 计算盈亏 ===
+            # 盈亏 = (出场价 - 入场价) × 数量
+            # 注意：quantity 已包含杠杆效应 (quantity = margin × leverage / price)
+            profit = (order.stop_loss_price - order.entry_price) * order.quantity
             order.profit = profit
 
             # 订单状态变更日志
@@ -1535,12 +1551,13 @@ class AlgoHandler:
         
         is_tp = (order.tp_order_id == algo_id)
         close_price = order.take_profit_price if is_tp else order.stop_loss_price
-        
-        leverage = self.trader.config.get("leverage", Decimal("10"))
-        profit = (close_price - order.entry_price) * order.quantity * leverage
+
+        # 盈亏 = (出场价 - 入场价) × 数量
+        # 注意：quantity 已包含杠杆效应 (quantity = margin × leverage / price)
+        profit = (close_price - order.entry_price) * order.quantity
         order.profit = profit
         order.close_price = close_price
-        
+
         self.trader.results["total_trades"] += 1
         
         if is_tp:
@@ -2647,7 +2664,7 @@ class BinanceLiveTrader:
 
         logger.info(f"[创建订单] A{level}: 入场价={order.entry_price:.2f}, "
                     f"止盈价={order.take_profit_price:.2f}, 止损价={order.stop_loss_price:.2f}, "
-                    f"数量={order.quantity:.6f}, 金额={order.stake_amount:.2f}, group_id={actual_group_id}")
+                    f"数量={order.quantity:.6f}, 保证金={order.stake_amount:.2f}, group_id={actual_group_id}")
 
         return order
     
@@ -2884,11 +2901,13 @@ class BinanceLiveTrader:
         if "orderId" in result:
             order.order_id = result["orderId"]
             order.quantity = quantity
-            order.stake_amount = quantity * price
+            # stake_amount 保持为保证金（已在 create_order 中设置）
+            # 名义价值 = quantity × price（不存储，仅日志使用）
+            notional_value = quantity * price
 
             # 下单成功日志
             logger.info(f"[下单成功] A{order.level}: orderId={order.order_id}, "
-                        f"价格={price:.2f}, 数量={quantity:.6f}, 金额={order.stake_amount:.2f}")
+                        f"价格={price:.2f}, 数量={quantity:.6f}, 保证金={order.stake_amount:.2f}, 名义价值={notional_value:.2f}")
 
             # === 设置创建时间 ===
             now_str = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
@@ -2916,8 +2935,8 @@ class BinanceLiveTrader:
                 print(f"{'='*60}")
                 print(f"  层级: A{order.level} / {self.config.get('max_entries', 4)}")
                 print(f"  入场价: {price:.{self.price_precision}f}")
-                print(f"  数量: {order.quantity:.6f} BTC")
-                print(f"  金额: {order.stake_amount:.2f} USDT")
+                print(f"  数量: {order.quantity:.6f}")
+                print(f"  保证金: {order.stake_amount:.2f} USDT")
                 print(f"  止盈价: {order.take_profit_price:.2f}")
                 print(f"  止损价: {order.stop_loss_price:.2f}")
                 print(f"  订单ID: {order.order_id}")
@@ -2927,8 +2946,8 @@ class BinanceLiveTrader:
                 print(f"  层级: A{order.level} / {self.config.get('max_entries', 4)}")
                 print(f"  权重: {weight_pct:.2f}%")
                 print(f"  入场价: {price:.{self.price_precision}f}")
-                print(f"  数量: {order.quantity:.6f} BTC")
-                print(f"  金额: {order.stake_amount:.2f} USDT")
+                print(f"  数量: {order.quantity:.6f}")
+                print(f"  保证金: {order.stake_amount:.2f} USDT")
                 print(f"  止盈价: {order.take_profit_price:.2f}")
                 print(f"  止损价: {order.stop_loss_price:.2f}")
                 print(f"  订单ID: {order.order_id}")
@@ -4538,6 +4557,10 @@ class BinanceLiveTrader:
             self.chain_state.group_id = order.group_id
             logger.info(f"[新轮次] group_id: {old_group_id} -> {order.group_id}")
 
+            # 同步更新数据库中的 session.group_id
+            if self.session_id:
+                self.db.update_session(self.session_id, {'group_id': order.group_id})
+
         # === 记录入场资金 ===
         entry_capital = self.capital_strategy.calculate_entry_capital(
             self.capital_pool, order.level, self.chain_state
@@ -4617,7 +4640,7 @@ class BinanceLiveTrader:
         logger.info(f"  平仓时间: {order.closed_at or '未知'}")
         logger.info(f"  平仓原因: {order.close_reason}")
         logger.info(f"  数量: {order.quantity:.6f}")
-        logger.info(f"  金额: {order.stake_amount:.2f} USDT")
+        logger.info(f"  保证金: {order.stake_amount:.2f} USDT")
         logger.info(f"  盈亏: {order.profit:.2f} USDT")
         logger.info(f"  持仓时长: {self._calculate_holding_duration(order)}")
     

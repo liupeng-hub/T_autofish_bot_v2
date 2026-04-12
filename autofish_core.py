@@ -879,13 +879,16 @@ class Autofish_OrderCalculator:
         参数:
             level: 层级
             base_price: 基准价格
-            total_amount: 总资金金额
+            total_amount: 总保证金金额
             weights: 权重列表（从配置文件读取）
             max_entries: 最大层级数（用于归一化）
             klines: K 线数据（未使用，保留兼容性）
 
         返回:
             Autofish_Order 实例
+
+        注意:
+            stake_amount 是保证金金额，quantity = stake_amount × leverage / entry_price
         """
         # 所有层级使用固定网格间距
         entry_price = base_price * (Decimal("1") - self.grid_spacing * level)
@@ -896,13 +899,15 @@ class Autofish_OrderCalculator:
         # 归一化权重
         normalized_weights = normalize_weights(weights, max_entries) if weights else None
 
-        # 使用归一化后的权重计算金额
+        # 使用归一化后的权重计算保证金
         if normalized_weights and level <= len(normalized_weights):
             stake_amount = total_amount * normalized_weights[level - 1]
         else:
             # 默认平均分配
             stake_amount = total_amount / Decimal(str(max_entries))
-        quantity = stake_amount / entry_price
+
+        # 数量 = 保证金 × 杠杆 / 入场价（名义价值 / 价格）
+        quantity = stake_amount * self.leverage / entry_price
 
         order = Autofish_Order(
             level=level,
@@ -917,21 +922,25 @@ class Autofish_OrderCalculator:
 
         logger.info(f"[创建订单] A{level}: entry={entry_price:.2f}, "
                    f"tp={take_profit_price:.2f}, sl={stop_loss_price:.2f}, "
-                   f"stake={stake_amount:.2f} USDT, qty={quantity:.6f} BTC")
+                   f"margin={stake_amount:.2f} USDT, leverage={self.leverage}x, qty={quantity:.6f} BTC")
 
         return order
     
     def calculate_profit(self, order: Autofish_Order, close_price: Decimal) -> Decimal:
         """计算盈亏
-        
+
         参数:
             order: 订单
             close_price: 平仓价格
-            
+
         返回:
             盈亏金额 (正数为盈利，负数为亏损)
+
+        注意:
+            quantity 已包含杠杆效应 (quantity = margin × leverage / price)
+            所以盈亏 = (close - entry) × quantity
         """
-        profit = order.stake_amount * (close_price - order.entry_price) / order.entry_price * self.leverage
+        profit = (close_price - order.entry_price) * order.quantity
         return profit
     
     @staticmethod
