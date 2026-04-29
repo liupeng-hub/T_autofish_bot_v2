@@ -384,6 +384,9 @@
                                 <button class="nav-link" id="timeout-tab" data-bs-toggle="tab" data-bs-target="#timeout-tab-pane" type="button" role="tab">超时参数</button>
                             </li>
                             <li class="nav-item" role="presentation">
+                                <button class="nav-link" id="retry-tab" data-bs-toggle="tab" data-bs-target="#retry-tab-pane" type="button" role="tab">重试参数</button>
+                            </li>
+                            <li class="nav-item" role="presentation">
                                 <button class="nav-link" id="capital-tab" data-bs-toggle="tab" data-bs-target="#capital-tab-pane" type="button" role="tab">资金池参数</button>
                             </li>
                         </ul>
@@ -675,14 +678,64 @@
                                         <input type="number" class="form-control" id="formA1Timeout" value="0" min="0">
                                     </div>
                                     <div class="col-md-4">
-                                        <label class="form-label">最小重挂价格差异(%)</label>
-                                        <input type="number" class="form-control" id="formMinRefreshPriceDiff" value="1.67" min="0" max="10" step="0.01">
-                                        <small class="text-muted">新入场价与旧入场价差异超过此值才重挂，默认1.67%</small>
+                                        <label class="form-label">最小重挂价格差值(USDT)</label>
+                                        <input type="number" class="form-control" id="formMinRefreshPriceDiff" value="100" min="0" max="10000" step="10">
+                                        <small class="text-muted">新旧入场价差值超过此值才重挂，默认100 USDT</small>
                                     </div>
                                     <div class="col-md-4">
                                         <label class="form-label">最大超时次数(0表示不限制)</label>
                                         <input type="number" class="form-control" id="formMaxTimeoutCount" value="10" min="0" max="100">
                                         <small class="text-muted">超过此次数后停止重挂</small>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- 重试参数 -->
+                            <div class="tab-pane fade" id="retry-tab-pane" role="tabpanel">
+                                <div class="row mb-3">
+                                    <div class="col-md-12">
+                                        <div class="alert alert-info" role="alert">
+                                            <small>网络异常时采用指数递增延迟重试，防止因临时网络问题导致程序退出。延迟时间：10s → 20s → 40s → 80s → ... → 上限</small>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-md-3">
+                                        <label class="form-label">API重试次数</label>
+                                        <input type="number" class="form-control" id="formApiRetryMaxAttempts" value="5" min="1" max="20">
+                                        <small class="text-muted">单个API请求重试次数</small>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">API基础延迟(秒)</label>
+                                        <input type="number" class="form-control" id="formApiRetryBaseDelay" value="2" min="1" max="60">
+                                        <small class="text-muted">首次重试等待时间</small>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">API最大延迟(秒)</label>
+                                        <input type="number" class="form-control" id="formApiRetryMaxDelay" value="7200" min="60" max="86400">
+                                        <small class="text-muted">默认7200秒(2小时)</small>
+                                    </div>
+                                    <div class="col-md-3">
+                                        <label class="form-label">指数基数</label>
+                                        <input type="number" class="form-control" id="formApiRetryExponentialBase" value="2" min="1.5" max="3" step="0.5">
+                                        <small class="text-muted">延迟递增倍数</small>
+                                    </div>
+                                </div>
+                                <div class="row mb-3">
+                                    <div class="col-md-4">
+                                        <label class="form-label">主循环网络异常上限(0=不限制)</label>
+                                        <input type="number" class="form-control" id="formLoopNetworkMaxErrors" value="0" min="0" max="100">
+                                        <small class="text-muted">0表示持续重试不退出</small>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">主循环基础延迟(秒)</label>
+                                        <input type="number" class="form-control" id="formLoopNetworkBaseDelay" value="10" min="5" max="120">
+                                        <small class="text-muted">首次异常等待时间</small>
+                                    </div>
+                                    <div class="col-md-4">
+                                        <label class="form-label">主循环最大延迟(秒)</label>
+                                        <input type="number" class="form-control" id="formLoopNetworkMaxDelay" value="7200" min="300" max="86400">
+                                        <small class="text-muted">默认7200秒(2小时)</small>
                                     </div>
                                 </div>
                             </div>
@@ -1622,7 +1675,7 @@
         function applyTimeoutDefaults() {
             const timeoutDef = strategyDefinitions.timeout?.params || {};
             setFieldDefaults('formA1Timeout', timeoutDef.a1_timeout_minutes, 30);
-            setFieldDefaults('formMinRefreshPriceDiff', timeoutDef.min_refresh_price_diff ? (timeoutDef.min_refresh_price_diff.default * 100) : 1.67);
+            setFieldDefaults('formMinRefreshPriceDiff', timeoutDef.min_refresh_price_diff ? timeoutDef.min_refresh_price_diff.default : 100, 100);
             setFieldDefaults('formMaxTimeoutCount', timeoutDef.max_timeout_count, 10);
         }
 
@@ -2018,7 +2071,7 @@
                 entry: entryConfig,
                 timeout: {
                     a1_timeout_minutes: parseInt(document.getElementById('formA1Timeout').value),
-                    min_refresh_price_diff: parseFloat(document.getElementById('formMinRefreshPriceDiff').value) / 100,  // 转换为小数
+                    min_refresh_price_diff: parseFloat(document.getElementById('formMinRefreshPriceDiff').value) || 100,  // 价格差值(USDT)
                     max_timeout_count: parseInt(document.getElementById('formMaxTimeoutCount').value)
                 },
                 capital: {
@@ -2029,6 +2082,15 @@
                         withdrawal_threshold: parseFloat(document.getElementById('formWithdrawThreshold').value) || 2.0,
                         withdrawal_retain: parseFloat(document.getElementById('formWithdrawRetain').value) || 1.5
                     }
+                },
+                retry: {
+                    api_max_attempts: parseInt(document.getElementById('formApiRetryMaxAttempts').value) || 5,
+                    api_base_delay: parseFloat(document.getElementById('formApiRetryBaseDelay').value) || 2.0,
+                    api_max_delay: parseFloat(document.getElementById('formApiRetryMaxDelay').value) || 7200.0,
+                    api_exponential_base: parseFloat(document.getElementById('formApiRetryExponentialBase').value) || 2.0,
+                    loop_network_max_errors: parseInt(document.getElementById('formLoopNetworkMaxErrors').value) || 0,
+                    loop_network_base_delay: parseFloat(document.getElementById('formLoopNetworkBaseDelay').value) || 10.0,
+                    loop_network_max_delay: parseFloat(document.getElementById('formLoopNetworkMaxDelay').value) || 7200.0
                 }
             };
         }
@@ -2157,7 +2219,7 @@
             // 超时参数
             const timeout = caseData.timeout || {};
             document.getElementById('formA1Timeout').value = timeout.a1_timeout_minutes || 30;
-            document.getElementById('formMinRefreshPriceDiff').value = (timeout.min_refresh_price_diff || 0.0167) * 100;  // 转换为百分比
+            document.getElementById('formMinRefreshPriceDiff').value = timeout.min_refresh_price_diff || 100;  // 价格差值(USDT)
             document.getElementById('formMaxTimeoutCount').value = timeout.max_timeout_count || 10;
 
             // 资金池参数 - 从 capital 读取
@@ -2169,6 +2231,16 @@
             const strategyConfig = capital[capitalStrategy] || {};
             document.getElementById('formWithdrawThreshold').value = strategyConfig.withdrawal_threshold || '';
             document.getElementById('formWithdrawRetain').value = strategyConfig.withdrawal_retain || '';
+
+            // 重试参数 - 从 retry 读取
+            const retry = caseData.retry || {};
+            document.getElementById('formApiRetryMaxAttempts').value = retry.api_max_attempts || 5;
+            document.getElementById('formApiRetryBaseDelay').value = retry.api_base_delay || 2;
+            document.getElementById('formApiRetryMaxDelay').value = retry.api_max_delay || 7200;
+            document.getElementById('formApiRetryExponentialBase').value = retry.api_exponential_base || 2;
+            document.getElementById('formLoopNetworkMaxErrors').value = retry.loop_network_max_errors || 0;
+            document.getElementById('formLoopNetworkBaseDelay').value = retry.loop_network_base_delay || 10;
+            document.getElementById('formLoopNetworkMaxDelay').value = retry.loop_network_max_delay || 7200;
 
             // 触发资金策略切换以正确显示参数区域
             onCapitalStrategyChange();
@@ -2280,7 +2352,7 @@
                                 <h6>超时参数</h6>
                                 <table class="table table-sm">
                                     <tr><td>A1超时</td><td>${caseData.timeout?.a1_timeout_minutes || 0} 分钟</td></tr>
-                                    <tr><td>最小重挂差异</td><td>${((caseData.timeout?.min_refresh_price_diff || 0.0167) * 100).toFixed(2)}%</td></tr>
+                                    <tr><td>最小重挂差值</td><td>${caseData.timeout?.min_refresh_price_diff || 100} USDT</td></tr>
                                     <tr><td>最大超时次数</td><td>${caseData.timeout?.max_timeout_count || 10} 次</td></tr>
                                 </table>
                             </div>
@@ -2301,6 +2373,21 @@
                                     )}</pre>
                                 </details>
                                 ` : ''}
+                            </div>
+                        </div>
+                        <hr>
+                        <div class="row">
+                            <div class="col-md-12">
+                                <h6>重试参数（网络异常指数递增延迟）</h6>
+                                <table class="table table-sm">
+                                    <tr><td>API重试次数</td><td>${caseData.retry?.api_max_attempts || 5} 次</td></tr>
+                                    <tr><td>API基础延迟</td><td>${caseData.retry?.api_base_delay || 2} 秒</td></tr>
+                                    <tr><td>API最大延迟</td><td>${caseData.retry?.api_max_delay || 7200} 秒 (${(caseData.retry?.api_max_delay || 7200) / 60} 分钟)</td></tr>
+                                    <tr><td>API指数基数</td><td>${caseData.retry?.api_exponential_base || 2}</td></tr>
+                                    <tr><td>主循环网络异常上限</td><td>${caseData.retry?.loop_network_max_errors || 0} (0=不限制)</td></tr>
+                                    <tr><td>主循环基础延迟</td><td>${caseData.retry?.loop_network_base_delay || 10} 秒</td></tr>
+                                    <tr><td>主循环最大延迟</td><td>${caseData.retry?.loop_network_max_delay || 7200} 秒 (${(caseData.retry?.loop_network_max_delay || 7200) / 60} 分钟)</td></tr>
+                                </table>
                             </div>
                         </div>
                         <hr>

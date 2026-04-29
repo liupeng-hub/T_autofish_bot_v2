@@ -52,6 +52,7 @@ class LiveCase:
     entry: str = "{}"        # entry_price_strategy
     timeout: str = "{}"      # a1_timeout_minutes
     capital: str = "{}"      # total_amount_quote, leverage, strategy, entry_mode, withdraw_threshold
+    retry: str = "{}"        # api_max_attempts, api_base_delay, api_max_delay, loop_network_max_errors
     status: str = "draft"    # draft, active, stopped, archived
     created_at: str = ""
     updated_at: str = ""
@@ -256,6 +257,7 @@ class LiveTradingDB:
                 entry TEXT DEFAULT '{}',
                 timeout TEXT DEFAULT '{}',
                 capital TEXT DEFAULT '{}',
+                retry TEXT DEFAULT '{}',
                 status TEXT DEFAULT 'draft',
                 created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
                 updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -323,6 +325,8 @@ class LiveTradingDB:
                 entry_total_capital REAL DEFAULT 0,
                 tp_supplemented INTEGER DEFAULT 0,
                 sl_supplemented INTEGER DEFAULT 0,
+                trade_id INTEGER DEFAULT 0,
+                trigger_order_id INTEGER DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES live_sessions(id) ON DELETE CASCADE
             )
         """)
@@ -344,6 +348,9 @@ class LiveTradingDB:
                 entry_time TEXT,
                 exit_time TEXT,
                 holding_duration_seconds INTEGER DEFAULT 0,
+                tp_algo_id INTEGER DEFAULT 0,
+                sl_algo_id INTEGER DEFAULT 0,
+                trigger_algo_id INTEGER DEFAULT 0,
                 FOREIGN KEY (session_id) REFERENCES live_sessions(id) ON DELETE CASCADE,
                 FOREIGN KEY (order_seq_id) REFERENCES live_orders(id),
                 FOREIGN KEY (order_id) REFERENCES live_orders(order_id)
@@ -565,10 +572,10 @@ class LiveTradingDB:
             now = datetime.now().isoformat()
             cursor.execute("""
                 INSERT INTO live_cases
-                (name, description, symbol, testnet, amplitude, market, entry, timeout, capital, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                (name, description, symbol, testnet, amplitude, market, entry, timeout, capital, retry, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (case.name, case.description, case.symbol, case.testnet,
-                  case.amplitude, case.market, case.entry, case.timeout, case.capital,
+                  case.amplitude, case.market, case.entry, case.timeout, case.capital, case.retry,
                   case.status, now, now))
 
             case_id = cursor.lastrowid
@@ -627,7 +634,7 @@ class LiveTradingDB:
 
         try:
             allowed_fields = ['name', 'description', 'symbol', 'testnet', 'amplitude',
-                            'market', 'entry', 'timeout', 'capital', 'status']
+                            'market', 'entry', 'timeout', 'capital', 'retry', 'status']
             set_clauses = []
             params = []
 
@@ -1057,8 +1064,9 @@ class LiveTradingDB:
                     created_at, first_created_at, filled_at, closed_at,
                     close_reason, close_price, profit,
                     entry_capital, entry_total_capital,
-                    tp_supplemented, sl_supplemented
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    tp_supplemented, sl_supplemented,
+                    trigger_order_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_id,
                 order.order_id or 0,
@@ -1082,7 +1090,8 @@ class LiveTradingDB:
                 float(order.entry_capital or 0),
                 float(order.entry_total_capital or 0),
                 order.tp_supplemented or 0,
-                order.sl_supplemented or 0
+                order.sl_supplemented or 0,
+                getattr(order, 'trigger_order_id', 0) or 0
             ))
             conn.commit()
             return cursor.lastrowid
@@ -1090,47 +1099,98 @@ class LiveTradingDB:
             conn.close()
 
     def update_order(self, session_id: int, order: Any) -> bool:
-        """更新订单状态"""
+        """更新订单状态
+
+        优先使用 db_id（数据库主键）查找订单，如果没有则使用 session_id + level + group_id
+        """
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
-            cursor.execute("""
-                UPDATE live_orders SET
-                    order_id = ?,
-                    state = ?,
-                    tp_order_id = ?,
-                    sl_order_id = ?,
-                    created_at = ?,
-                    first_created_at = ?,
-                    filled_at = ?,
-                    closed_at = ?,
-                    close_reason = ?,
-                    close_price = ?,
-                    profit = ?,
-                    entry_capital = ?,
-                    entry_total_capital = ?,
-                    tp_supplemented = ?,
-                    sl_supplemented = ?
-                WHERE session_id = ? AND level = ? AND group_id = ?
-            """, (
-                order.order_id or 0,
-                order.state,
-                order.tp_order_id or 0,
-                order.sl_order_id or 0,
-                order.created_at or "",
-                order.first_created_at or order.created_at or "",
-                order.filled_at or "",
-                order.closed_at or "",
-                order.close_reason or "",
-                float(order.close_price or 0),
-                float(order.profit or 0),
-                float(order.entry_capital or 0),
-                float(order.entry_total_capital or 0),
-                order.tp_supplemented or 0,
-                order.sl_supplemented or 0,
-                session_id, order.level, order.group_id
-            ))
+            # 优先使用 db_id 查找
+            db_id = getattr(order, 'db_id', None)
+            if db_id and db_id > 0:
+                cursor.execute("""
+                    UPDATE live_orders SET
+                        order_id = ?,
+                        state = ?,
+                        tp_order_id = ?,
+                        sl_order_id = ?,
+                        created_at = ?,
+                        first_created_at = ?,
+                        filled_at = ?,
+                        closed_at = ?,
+                        close_reason = ?,
+                        close_price = ?,
+                        profit = ?,
+                        entry_capital = ?,
+                        entry_total_capital = ?,
+                        tp_supplemented = ?,
+                        sl_supplemented = ?,
+                        trigger_order_id = ?,
+                        trade_id = ?
+                    WHERE id = ?
+                """, (
+                    order.order_id or 0,
+                    order.state,
+                    order.tp_order_id or 0,
+                    order.sl_order_id or 0,
+                    order.created_at or "",
+                    order.first_created_at or order.created_at or "",
+                    order.filled_at or "",
+                    order.closed_at or "",
+                    order.close_reason or "",
+                    float(order.close_price or 0),
+                    float(order.profit or 0),
+                    float(order.entry_capital or 0),
+                    float(order.entry_total_capital or 0),
+                    order.tp_supplemented or 0,
+                    order.sl_supplemented or 0,
+                    getattr(order, 'trigger_order_id', 0) or 0,
+                    getattr(order, 'trade_id', 0) or 0,
+                    db_id
+                ))
+            else:
+                cursor.execute("""
+                    UPDATE live_orders SET
+                        order_id = ?,
+                        state = ?,
+                        tp_order_id = ?,
+                        sl_order_id = ?,
+                        created_at = ?,
+                        first_created_at = ?,
+                        filled_at = ?,
+                        closed_at = ?,
+                        close_reason = ?,
+                        close_price = ?,
+                        profit = ?,
+                        entry_capital = ?,
+                        entry_total_capital = ?,
+                        tp_supplemented = ?,
+                        sl_supplemented = ?,
+                        trigger_order_id = ?,
+                        trade_id = ?
+                    WHERE session_id = ? AND level = ? AND group_id = ? AND state != 'closed'
+                """, (
+                    order.order_id or 0,
+                    order.state,
+                    order.tp_order_id or 0,
+                    order.sl_order_id or 0,
+                    order.created_at or "",
+                    order.first_created_at or order.created_at or "",
+                    order.filled_at or "",
+                    order.closed_at or "",
+                    order.close_reason or "",
+                    float(order.close_price or 0),
+                    float(order.profit or 0),
+                    float(order.entry_capital or 0),
+                    float(order.entry_total_capital or 0),
+                    order.tp_supplemented or 0,
+                    order.sl_supplemented or 0,
+                    getattr(order, 'trigger_order_id', 0) or 0,
+                    getattr(order, 'trade_id', 0) or 0,
+                    session_id, order.level, order.group_id
+                ))
             conn.commit()
             return cursor.rowcount > 0
         finally:
@@ -1216,12 +1276,20 @@ class LiveTradingDB:
     # ==================== 交易记录 CRUD ====================
 
     def save_trade(self, session_id: int, order: Any, trade_type: str,
-                   leverage: int = 10, holding_duration: int = 0) -> int:
+                   leverage: int = 10, holding_duration: int = 0,
+                   trigger_algo_id: int = 0) -> int:
         """保存交易记录
 
         字段说明:
             order_seq_id: 数据库主键 ID (live_orders.id)
-            order_id: Binance orderId (live_orders.order_id)
+            order_id: Binance orderId (live_orders.order_id，入场单ID)
+            tp_algo_id: 止盈条件单 ID (order.tp_order_id)
+            sl_algo_id: 止损条件单 ID (order.sl_order_id)
+            trigger_algo_id: 触发的条件单 ID（止盈或止损单的 algoId）
+
+        副作用:
+            - 更新 order.trade_id 为新创建的 trade_id
+            - 更新 live_orders.trade_id 建立反向关联
         """
         conn = self._get_connection()
         cursor = conn.cursor()
@@ -1229,6 +1297,8 @@ class LiveTradingDB:
         # 获取数据库主键 ID 和 Binance orderId
         db_id = getattr(order, 'db_id', None) or 0
         binance_order_id = getattr(order, 'order_id', None) or 0
+        tp_algo_id = getattr(order, 'tp_order_id', None) or 0
+        sl_algo_id = getattr(order, 'sl_order_id', None) or 0
 
         if db_id == 0:
             logger.warning(f"[数据库] save_trade: order.db_id 为空，无法建立主键关联，level={order.level}")
@@ -1238,12 +1308,13 @@ class LiveTradingDB:
                 INSERT INTO live_trades (
                     session_id, order_seq_id, order_id, trade_type, level,
                     entry_price, exit_price, quantity, profit,
-                    leverage, entry_time, exit_time, holding_duration_seconds
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    leverage, entry_time, exit_time, holding_duration_seconds,
+                    tp_algo_id, sl_algo_id, trigger_algo_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 session_id,
                 db_id,           # order_seq_id: 数据库主键
-                binance_order_id, # order_id: Binance orderId
+                binance_order_id, # order_id: Binance orderId（入场单）
                 trade_type,
                 order.level,
                 float(order.entry_price),
@@ -1253,10 +1324,26 @@ class LiveTradingDB:
                 leverage,
                 order.filled_at or "",
                 order.closed_at or "",
-                holding_duration
+                holding_duration,
+                tp_algo_id,
+                sl_algo_id,
+                trigger_algo_id
             ))
+            trade_id = cursor.lastrowid
             conn.commit()
-            return cursor.lastrowid
+
+            # 更新 order 对象的 trade_id
+            if hasattr(order, 'trade_id'):
+                order.trade_id = trade_id
+
+            # 更新 live_orders 中的 trade_id，建立反向关联
+            if db_id > 0:
+                cursor.execute("""
+                    UPDATE live_orders SET trade_id = ? WHERE id = ?
+                """, (trade_id, db_id))
+                conn.commit()
+
+            return trade_id
         finally:
             conn.close()
 
@@ -1337,6 +1424,25 @@ class LiveTradingDB:
             cursor.execute("SELECT * FROM live_capital_statistics WHERE session_id = ?", (session_id,))
             row = cursor.fetchone()
             return dict(row) if row else None
+        finally:
+            conn.close()
+
+    def get_statistics_id(self, session_id: int) -> int:
+        """获取 session 对应的 capital_statistics 记录 ID
+
+        Args:
+            session_id: 会话 ID
+
+        Returns:
+            capital_statistics 表的 id，如果不存在返回 0
+        """
+        conn = self._get_connection()
+        cursor = conn.cursor()
+
+        try:
+            cursor.execute("SELECT id FROM live_capital_statistics WHERE session_id = ?", (session_id,))
+            row = cursor.fetchone()
+            return row['id'] if row else 0
         finally:
             conn.close()
 
@@ -1703,31 +1809,56 @@ class LiveTradingDB:
         return self.list_sessions(filters={'status': 'running'})
 
     def get_statistics_summary(self, symbol: str = None) -> Dict:
-        """获取资金统计汇总"""
+        """获取资金统计汇总（直接从 live_trades 表统计交易数据）"""
         conn = self._get_connection()
         cursor = conn.cursor()
 
         try:
+            # 从 live_trades 表直接统计交易数据（排除 bug_oversell 异常交易）
             sql = """
                 SELECT
-                    COUNT(*) as total_sessions,
-                    SUM(cs.total_trades) as total_trades,
-                    SUM(cs.profit_trades) as profit_trades,
-                    SUM(cs.loss_trades) as loss_trades,
-                    AVG(cs.win_rate) as avg_win_rate,
-                    SUM(cs.total_profit) as total_profit,
-                    SUM(cs.total_loss) as total_loss,
-                    AVG(cs.max_drawdown) as avg_max_drawdown,
-                    SUM(cs.withdrawal_count) as withdrawal_count,
-                    SUM(cs.liquidation_count) as liquidation_count
-                FROM live_capital_statistics cs
-                JOIN live_sessions s ON cs.session_id = s.id
+                    (SELECT COUNT(*) FROM live_sessions WHERE status != 'stopped') as total_sessions,
+                    COUNT(*) as total_trades,
+                    SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as profit_trades,
+                    SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END) as loss_trades,
+                    CASE
+                        WHEN COUNT(*) > 0
+                        THEN ROUND(SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)
+                        ELSE 0
+                    END as avg_win_rate,
+                    SUM(CASE WHEN profit > 0 THEN profit ELSE 0 END) as total_profit,
+                    ABS(SUM(CASE WHEN profit < 0 THEN profit ELSE 0 END)) as total_loss,
+                    COALESCE((SELECT AVG(max_drawdown) FROM live_capital_statistics), 0) as avg_max_drawdown,
+                    COALESCE((SELECT SUM(withdrawal_count) FROM live_capital_statistics), 0) as withdrawal_count,
+                    COALESCE((SELECT SUM(liquidation_count) FROM live_capital_statistics), 0) as liquidation_count
+                FROM live_trades t
+                JOIN live_sessions s ON t.session_id = s.id
+                WHERE t.trade_type NOT LIKE 'bug%'
             """
             params = []
 
             if symbol:
-                sql += " WHERE s.symbol = ?"
-                params.append(symbol)
+                sql = """
+                    SELECT
+                        (SELECT COUNT(*) FROM live_sessions WHERE status != 'stopped' AND symbol = ?) as total_sessions,
+                        COUNT(*) as total_trades,
+                        SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) as profit_trades,
+                        SUM(CASE WHEN profit < 0 THEN 1 ELSE 0 END) as loss_trades,
+                        CASE
+                            WHEN COUNT(*) > 0
+                            THEN ROUND(SUM(CASE WHEN profit > 0 THEN 1 ELSE 0 END) * 100.0 / COUNT(*), 2)
+                            ELSE 0
+                        END as avg_win_rate,
+                        SUM(CASE WHEN profit > 0 THEN profit ELSE 0 END) as total_profit,
+                        ABS(SUM(CASE WHEN profit < 0 THEN profit ELSE 0 END)) as total_loss,
+                        COALESCE((SELECT AVG(max_drawdown) FROM live_capital_statistics cs JOIN live_sessions ls ON cs.session_id = ls.id WHERE ls.symbol = ?), 0) as avg_max_drawdown,
+                        COALESCE((SELECT SUM(withdrawal_count) FROM live_capital_statistics cs JOIN live_sessions ls ON cs.session_id = ls.id WHERE ls.symbol = ?), 0) as withdrawal_count,
+                        COALESCE((SELECT SUM(liquidation_count) FROM live_capital_statistics cs JOIN live_sessions ls ON cs.session_id = ls.id WHERE ls.symbol = ?), 0) as liquidation_count
+                    FROM live_trades t
+                    JOIN live_sessions s ON t.session_id = s.id
+                    WHERE s.symbol = ? AND t.trade_type NOT LIKE 'bug%'
+                """
+                params = [symbol, symbol, symbol, symbol, symbol]
 
             cursor.execute(sql, params)
             row = cursor.fetchone()

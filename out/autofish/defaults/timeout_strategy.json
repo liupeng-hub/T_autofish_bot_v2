@@ -11,11 +11,11 @@
       "description": "A1 层超时时间（分钟），0 表示不超时。超过此时间未入场则评估是否重挂"
     },
     "min_refresh_price_diff": {
-      "default": 0.0167,
+      "default": 100,
       "type": "float",
       "min": 0,
-      "max": 0.1,
-      "description": "A1 超时重挂的最小价格差异阈值。只有新入场价与旧入场价差异超过此值才重挂，默认 1.67%（约 1000 USDT @ 60000 价格）"
+      "max": 10000,
+      "description": "A1 超时重挂的最小价格差值阈值（USDT）。只有新入场价与旧入场价差值超过此值才重挂，默认 100 USDT"
     },
     "max_timeout_count": {
       "default": 10,

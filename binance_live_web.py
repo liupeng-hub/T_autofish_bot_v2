@@ -165,7 +165,7 @@ def _show_case(args):
         sys.exit(1)
 
     # 解析 JSON 字段
-    for field in ['amplitude', 'market', 'entry', 'timeout', 'capital']:
+    for field in ['amplitude', 'market', 'entry', 'timeout', 'capital', 'retry']:
         if case.get(field):
             try:
                 case[field] = json.loads(case[field])
@@ -275,7 +275,7 @@ def _show_session(args):
         sys.exit(1)
 
     # 解析 JSON 字段
-    for field in ['amplitude', 'market', 'entry', 'timeout', 'capital']:
+    for field in ['amplitude', 'market', 'entry', 'timeout', 'capital', 'retry']:
         if session.get(field):
             try:
                 session[field] = json.loads(session[field])
@@ -415,6 +415,7 @@ def create_flask_app():
                 entry=json.dumps(data.get('entry', {})),
                 timeout=json.dumps(data.get('timeout', {})),
                 capital=json.dumps(data.get('capital', {})),
+                retry=json.dumps(data.get('retry', {})),
                 status='draft'
             )
             case_id = db.create_case(case)
@@ -433,7 +434,7 @@ def create_flask_app():
                 return jsonify({'success': False, 'error': 'Case not found'}), 404
 
             # 解析 JSON 字段
-            for field in ['amplitude', 'market', 'entry', 'timeout', 'capital']:
+            for field in ['amplitude', 'market', 'entry', 'timeout', 'capital', 'retry']:
                 if case.get(field):
                     try:
                         case[field] = json.loads(case[field])
@@ -515,6 +516,8 @@ def create_flask_app():
                 update_data['timeout'] = json.dumps(data['timeout']) if isinstance(data['timeout'], dict) else data['timeout']
             if 'capital' in data:
                 update_data['capital'] = json.dumps(data['capital']) if isinstance(data['capital'], dict) else data['capital']
+            if 'retry' in data:
+                update_data['retry'] = json.dumps(data['retry']) if isinstance(data['retry'], dict) else data['retry']
 
             success = db.update_case(case_id, update_data)
             if success:
@@ -611,7 +614,7 @@ def create_flask_app():
                 return jsonify({'success': False, 'error': 'Session not found'}), 404
 
             # 解析 JSON 字段
-            for field in ['amplitude', 'market', 'entry', 'timeout', 'capital']:
+            for field in ['amplitude', 'market', 'entry', 'timeout', 'capital', 'retry']:
                 if session.get(field):
                     try:
                         session[field] = json.loads(session[field])

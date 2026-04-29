@@ -88,6 +88,8 @@ class Autofish_Order:
         closed_at: 平仓时间
         tp_supplemented: 止盈单是否为补下
         sl_supplemented: 止损单是否为补下
+        trigger_order_id: 触发平仓的市场单 ID（市场价平仓时使用）
+        trade_id: 交易记录 ID
     
     示例:
         >>> order = Autofish_Order(
@@ -123,7 +125,9 @@ class Autofish_Order:
     first_created_at: Optional[str] = None  # 首次挂单时间（用于累计执行时间计算）
     timeout_count: int = 0  # 超时重挂次数
     db_id: Optional[int] = None  # 数据库主键 ID（保存订单后设置）
-    
+    trade_id: Optional[int] = None  # 交易记录 ID（save_trade 后设置）
+    trigger_order_id: Optional[int] = None  # 触发平仓的市场单 ID（市场价平仓时设置）
+
     def set_state(self, new_state: str, reason: str = ""):
         """设置订单状态"""
         old_state = self.state
@@ -164,6 +168,8 @@ class Autofish_Order:
             "entry_total_capital": str(self.entry_total_capital) if self.entry_total_capital else None,
             "group_id": self.group_id,
             "timeout_count": self.timeout_count,
+            "trigger_order_id": self.trigger_order_id,
+            "trade_id": self.trade_id,
         }
     
     @classmethod
@@ -2976,6 +2982,7 @@ class Autofish_ConfigLoader:
             "entry": cls._parse_json_field(case.get("entry")),
             "timeout": cls._parse_json_field(case.get("timeout")),
             "capital": cls._parse_json_field(case.get("capital")),
+            "retry": cls._parse_json_field(case.get("retry")),  # 添加 retry 配置
         }
 
         if is_live:
