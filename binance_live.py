@@ -1295,7 +1295,11 @@ class AlgoHandler:
         self.trader = trader
     
     async def handle_algo_update(self, algo_data: Dict[str, Any]) -> None:
-        logger.info(f"[Algo事件] 收到消息: {algo_data}")
+        # 只记录关键信息，避免敏感数据泄露
+        algo_id = algo_data.get("aid") or algo_data.get("g") or algo_data.get("algoId")
+        algo_status = algo_data.get("X") or algo_data.get("algoStatus")
+        logger.info(f"[Algo事件] 收到消息: algoId={algo_id}, status={algo_status}")
+        logger.debug(f"[Algo事件] 完整数据: {algo_data}")
         
         # Binance ALGO_UPDATE 消息格式：
         # - aid: algoId（直接在顶层）
@@ -1749,6 +1753,11 @@ class AlgoHandler:
         await self.trader._place_entry_order(new_order)
     
     async def _handle_canceled(self, order: Any, algo_id: int, algo_type: str) -> None:
+        # 如果订单已关闭，不需要处理取消事件
+        if order.state == "closed":
+            logger.debug(f"[手动取消] A{order.level} 已关闭，忽略 algo 取消事件")
+            return
+
         is_tp = (order.tp_order_id == algo_id)
         if is_tp:
             order.tp_order_id = None
@@ -1764,6 +1773,11 @@ class AlgoHandler:
         self.trader._save_state()
     
     async def _handle_expired(self, order: Any, algo_id: int, algo_type: str) -> None:
+        # 如果订单已关闭，不需要处理过期事件
+        if order.state == "closed":
+            logger.debug(f"[条件单过期] A{order.level} 已关闭，忽略 algo 过期事件")
+            return
+
         is_tp = (order.tp_order_id == algo_id)
         if is_tp:
             order.tp_order_id = None
@@ -1869,8 +1883,13 @@ class AlgoHandler:
 
             self.trader._save_state()
     
-    async def _handle_rejected(self, order: Any, algo_data: Dict[str, Any], 
+    async def _handle_rejected(self, order: Any, algo_data: Dict[str, Any],
                                algo_id: int, algo_type: str) -> None:
+        # 如果订单已关闭，不需要处理拒绝事件
+        if order.state == "closed":
+            logger.debug(f"[条件单拒绝] A{order.level} 已关闭，忽略 algo 拒绝事件")
+            return
+
         inner_data = algo_data.get("o", {})
         reject_reason = inner_data.get("r", "未知原因")
         is_tp = (order.tp_order_id == algo_id)
@@ -3567,12 +3586,38 @@ class BinanceLiveTrader:
                 if order_id and order_id not in existing_order_ids:
                     missing_entries.append(o)
 
-            if not missing_entries:
-                logger.info("[同步缺失订单] 无缺失入场单")
+            # 获取当前 session 的启动时间，用于过滤历史订单
+            session_start_time = None
+            if self.session_id:
+                session_data = self.db.get_session(self.session_id)
+                if session_data and session_data.get('start_time'):
+                    session_start_time = datetime.strptime(session_data['start_time'], '%Y-%m-%d %H:%M:%S')
+                    logger.info(f"[同步缺失订单] Session 启动时间: {session_start_time}")
+
+            # 过滤缺失入场单：只同步入场时间 >= session 启动时间的订单
+            current_session_entries = []
+            historical_entries = []
+
+            for o in missing_entries:
+                entry_time = datetime.fromtimestamp(o.get('time', 0) / 1000)
+                if session_start_time and entry_time < session_start_time:
+                    historical_entries.append(o)
+                else:
+                    current_session_entries.append(o)
+
+            if historical_entries:
+                logger.info(f"[同步缺失订单] 过滤 {len(historical_entries)} 个历史订单（入场时间早于 session 启动）")
+                for o in historical_entries:
+                    entry_id = o.get('orderId')
+                    entry_time = datetime.fromtimestamp(o.get('time', 0) / 1000)
+                    logger.debug(f"[历史订单过滤] order_id={entry_id}, 入场时间={entry_time}")
+
+            if not current_session_entries:
+                logger.info("[同步缺失订单] 无当前 session 的缺失入场单")
                 return
 
-            logger.info(f"[同步缺失订单] 发现 {len(missing_entries)} 个缺失入场单")
-            print(f"\n📡 发现 {len(missing_entries)} 个缺失入场单，开始同步...")
+            logger.info(f"[同步缺失订单] 发现 {len(current_session_entries)} 个当前 session 缺失入场单")
+            print(f"\n📡 发现 {len(current_session_entries)} 个缺失入场单，开始同步...")
 
             # 找出缺失的平仓单（MARKET SELL FILLED）
             filled_sell_orders = [o for o in all_orders
@@ -3581,7 +3626,7 @@ class BinanceLiveTrader:
                                   and o.get('type') == 'MARKET']
 
             # 匹配入场和平仓单（按数量匹配）
-            for entry in missing_entries:
+            for entry in current_session_entries:
                 entry_id = entry.get('orderId')
                 entry_qty = Decimal(str(entry.get('executedQty', 0)))
                 entry_price = Decimal(str(entry.get('avgPrice', 0)))
@@ -4704,11 +4749,14 @@ class BinanceLiveTrader:
 
         if event_type == "ORDER_TRADE_UPDATE":
             order_data = data.get("o", {})
-            # 详细调试日志
+            # 详细调试日志（DEBUG 级别包含完整数据）
             logger.debug(f"[WebSocket] ORDER_TRADE_UPDATE: orderId={order_data.get('i')}, "
                          f"status={order_data.get('X')}, executedQty={order_data.get('z')}, "
                          f"avgPrice={order_data.get('ap')}, symbol={order_data.get('s')}")
-            logger.info(f"[WebSocket] ORDER_TRADE_UPDATE: {order_data}")
+            # INFO 级别只记录关键信息，避免敏感数据泄露
+            logger.info(f"[WebSocket] ORDER_TRADE_UPDATE: orderId={order_data.get('i')}, "
+                        f"symbol={order_data.get('s')}, status={order_data.get('X')}, "
+                        f"side={order_data.get('S')}, qty={order_data.get('z')}, price={order_data.get('ap')}")
             if not isinstance(order_data, dict):
                 logger.warning(f"[WebSocket] ORDER_TRADE_UPDATE order_data 不是字典: {type(order_data)}, 内容: {order_data}")
                 return
@@ -4750,7 +4798,10 @@ class BinanceLiveTrader:
             logger.debug(f"[WebSocket] ALGO_UPDATE: algoId={data.get('algoId')}, "
                          f"status={data.get('algoStatus')}, type={data.get('orderType')}, "
                          f"symbol={data.get('symbol')}")
-            logger.info(f"[WebSocket] ALGO_UPDATE: {data}")
+            # INFO 级别只记录关键信息
+            logger.info(f"[WebSocket] ALGO_UPDATE: algoId={data.get('algoId')}, "
+                        f"status={data.get('algoStatus')}, type={data.get('orderType')}, "
+                        f"symbol={data.get('symbol')}, triggerPrice={data.get('triggerPrice')}")
             await self.algo_handler.handle_algo_update(data)
 
         elif event_type == "kline":
@@ -4762,7 +4813,8 @@ class BinanceLiveTrader:
             self.ws_connected = False
 
         else:
-            logger.info(f"[WebSocket] 未处理的事件类型: {event_type}, data={data}")
+            # 未处理的事件类型，使用 debug 级别避免敏感数据泄露
+            logger.debug(f"[WebSocket] 未处理的事件类型: {event_type}, data={data}")
 
     async def _handle_kline_event(self, kline_data: Dict[str, Any]) -> None:
         """处理 K线事件
@@ -5200,6 +5252,11 @@ class BinanceLiveTrader:
         await self._process_order_filled(order, filled_price)
     
     async def _handle_order_cancelled(self, order: Any, order_data: Dict[str, Any]) -> None:
+        # 防重复处理：如果订单已经不在 pending 状态，跳过
+        if order.state not in ('pending', 'filled'):
+            logger.warning(f"[订单取消] A{order.level} 状态为 {order.state}，跳过取消处理")
+            return
+
         logger.info(f"[订单取消] A{order.level}")
 
         await self._cancel_algo_orders_for_order(order)

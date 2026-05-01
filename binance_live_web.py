@@ -169,8 +169,8 @@ def _show_case(args):
         if case.get(field):
             try:
                 case[field] = json.loads(case[field])
-            except:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON 解析失败: {field} - {e}")
 
     print(json.dumps(case, indent=2, ensure_ascii=False, default=str))
 
@@ -279,8 +279,8 @@ def _show_session(args):
         if session.get(field):
             try:
                 session[field] = json.loads(session[field])
-            except:
-                pass
+            except json.JSONDecodeError as e:
+                logger.warning(f"JSON 解析失败: {field} - {e}")
 
     print(json.dumps(session, indent=2, ensure_ascii=False, default=str))
 
@@ -438,8 +438,8 @@ def create_flask_app():
                 if case.get(field):
                     try:
                         case[field] = json.loads(case[field])
-                    except:
-                        pass
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON 解析失败: {field} - {e}")
 
             return jsonify({'success': True, 'data': case})
         except Exception as e:
@@ -618,8 +618,8 @@ def create_flask_app():
                 if session.get(field):
                     try:
                         session[field] = json.loads(session[field])
-                    except:
-                        pass
+                    except json.JSONDecodeError as e:
+                        logger.warning(f"JSON 解析失败: {field} - {e}")
 
             return jsonify({'success': True, 'data': session})
         except Exception as e:

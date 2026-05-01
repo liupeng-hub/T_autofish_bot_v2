@@ -80,67 +80,67 @@ class KlineFetcher:
         """确保表存在"""
         table = self._get_table_name(symbol, interval)
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            CREATE TABLE IF NOT EXISTS {table} (
-                timestamp INTEGER PRIMARY KEY,
-                open REAL NOT NULL,
-                high REAL NOT NULL,
-                low REAL NOT NULL,
-                close REAL NOT NULL,
-                volume REAL NOT NULL
-            )
-        """)
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_time ON {table}(timestamp)")
-        conn.commit()
-        conn.close()
+        try:
+            cursor = conn.cursor()
+            cursor.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table} (
+                    timestamp INTEGER PRIMARY KEY,
+                    open REAL NOT NULL,
+                    high REAL NOT NULL,
+                    low REAL NOT NULL,
+                    close REAL NOT NULL,
+                    volume REAL NOT NULL
+                )
+            """)
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_{table}_time ON {table}(timestamp)")
+            conn.commit()
+        finally:
+            conn.close()
     
-    def query_cache(self, symbol: str, interval: str, 
+    def query_cache(self, symbol: str, interval: str,
                     start_time: int = None, end_time: int = None) -> List[Dict]:
         """从缓存查询 K 线数据"""
         table = self._get_table_name(symbol, interval)
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
+            cursor = conn.cursor()
+
             # 检查表是否存在
             cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
             if not cursor.fetchone():
-                conn.close()
                 return []
-            
+
             # 查询数据
             if start_time and end_time:
                 cursor.execute(f"""
-                    SELECT timestamp, open, high, low, close, volume 
-                    FROM {table} 
+                    SELECT timestamp, open, high, low, close, volume
+                    FROM {table}
                     WHERE timestamp >= ? AND timestamp <= ?
                     ORDER BY timestamp ASC
                 """, (start_time, end_time))
             elif start_time:
                 cursor.execute(f"""
-                    SELECT timestamp, open, high, low, close, volume 
-                    FROM {table} 
+                    SELECT timestamp, open, high, low, close, volume
+                    FROM {table}
                     WHERE timestamp >= ?
                     ORDER BY timestamp ASC
                 """, (start_time,))
             elif end_time:
                 cursor.execute(f"""
-                    SELECT timestamp, open, high, low, close, volume 
-                    FROM {table} 
+                    SELECT timestamp, open, high, low, close, volume
+                    FROM {table}
                     WHERE timestamp <= ?
                     ORDER BY timestamp ASC
                 """, (end_time,))
             else:
                 cursor.execute(f"""
-                    SELECT timestamp, open, high, low, close, volume 
-                    FROM {table} 
+                    SELECT timestamp, open, high, low, close, volume
+                    FROM {table}
                     ORDER BY timestamp ASC
                 """)
-            
+
             rows = cursor.fetchall()
-            conn.close()
-            
+
             klines = []
             for row in rows:
                 klines.append({
@@ -151,12 +151,13 @@ class KlineFetcher:
                     "close": row[4],
                     "volume": row[5],
                 })
-            
+
             return klines
         except Exception as e:
             logger.error(f"[查询缓存] 失败: {e}")
-            conn.close()
             return []
+        finally:
+            conn.close()
     
     def _save_to_cache(self, symbol: str, interval: str, klines: List[Dict]):
         """保存 K 线数据到缓存"""
@@ -192,43 +193,41 @@ class KlineFetcher:
     def _find_missing_ranges(self, symbol: str, interval: str,
                               start_time: int, end_time: int) -> List[Tuple[int, int]]:
         """找出缺失的时间范围
-        
+
         检查缓存中是否已覆盖请求的时间范围。
         如果缓存中有数据，但中间有缺失，也会检测出来。
-        
+
         参数:
             symbol: 交易对
             interval: K 线周期
             start_time: 请求的开始时间戳（毫秒）
             end_time: 请求的结束时间戳（毫秒）
-        
+
         返回:
             缺失的时间范围列表，每个元素为 (start, end) 元组
         """
         table = self._get_table_name(symbol, interval)
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
+            cursor = conn.cursor()
+
             # 检查表是否存在
             cursor.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{table}'")
             if not cursor.fetchone():
-                conn.close()
                 return [(start_time, end_time)]
-            
+
             # 获取已有数据的时间范围
             cursor.execute(f"""
-                SELECT MIN(timestamp), MAX(timestamp), COUNT(*) 
+                SELECT MIN(timestamp), MAX(timestamp), COUNT(*)
                 FROM {table}
             """)
             row = cursor.fetchone()
-            
+
             if not row or row[2] == 0:
-                conn.close()
                 return [(start_time, end_time)]
-            
+
             min_time, max_time, count = row
-            
+
             # 计算预期的 K 线数量
             interval_minutes = {
                 "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
@@ -237,7 +236,7 @@ class KlineFetcher:
             }
             minutes = interval_minutes.get(interval, 1)
             expected_count = int((end_time - start_time) / (1000 * 60 * minutes))
-            
+
             # 如果缓存数量小于预期数量，说明有缺失
             if count < expected_count * 0.9:  # 允许 10% 的误差
                 # 获取缓存中已有的所有时间戳
@@ -247,22 +246,21 @@ class KlineFetcher:
                     ORDER BY timestamp ASC
                 """, (start_time, end_time))
                 timestamps = [row[0] for row in cursor.fetchall()]
-                conn.close()
-                
+
                 # 找出缺失的时间范围
                 missing_ranges = []
                 expected_timestamp = start_time
-                
+
                 for ts in timestamps:
                     if ts > expected_timestamp:
                         # 有缺失
                         missing_ranges.append((expected_timestamp, ts - 1))
                     expected_timestamp = ts + minutes * 60 * 1000
-                
+
                 # 检查最后一段
                 if expected_timestamp <= end_time:
                     missing_ranges.append((expected_timestamp, end_time))
-                
+
                 return missing_ranges
             else:
                 # 缓存数量足够，检查边界
@@ -283,13 +281,13 @@ class KlineFetcher:
                     if gap >= interval_ms:
                         missing_ranges.append((max_time + 1, end_time))
 
-                conn.close()
                 return missing_ranges
-            
+
         except Exception as e:
             logger.error(f"[检查缺失] 失败: {e}")
-            conn.close()
             return [(start_time, end_time)]
+        finally:
+            conn.close()
     
     async def _fetch_from_api(self, symbol: str, interval: str,
                                start_time: int, end_time: int) -> List[Dict]:
@@ -452,53 +450,53 @@ class KlineFetcher:
     def get_cache_status(self, symbol: str = None, interval: str = None) -> Dict:
         """获取缓存状态"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
+            cursor = conn.cursor()
+
             # 获取所有表
             cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE 'klines_%'")
             tables = cursor.fetchall()
-            
+
             status = {}
             for (table_name,) in tables:
                 parts = table_name.replace("klines_", "").rsplit("_", 1)
                 if len(parts) == 2:
                     tbl_symbol, tbl_interval = parts
-                    
+
                     if symbol and tbl_symbol != symbol:
                         continue
                     if interval and tbl_interval != interval:
                         continue
-                    
+
                     cursor.execute(f"SELECT COUNT(*), MIN(timestamp), MAX(timestamp) FROM {table_name}")
                     row = cursor.fetchone()
-                    
+
                     if row and row[0] > 0:
                         status[f"{tbl_symbol}_{tbl_interval}"] = {
                             "count": row[0],
                             "min_time": datetime.fromtimestamp(row[1] / 1000).strftime('%Y-%m-%d %H:%M'),
                             "max_time": datetime.fromtimestamp(row[2] / 1000).strftime('%Y-%m-%d %H:%M'),
                         }
-            
-            conn.close()
+
             return status
         except Exception as e:
             logger.error(f"[获取状态] 失败: {e}")
-            conn.close()
             return {}
+        finally:
+            conn.close()
     
     def clear_cache(self, symbol: str = None, interval: str = None):
         """清空缓存"""
         conn = sqlite3.connect(self.db_path)
-        cursor = conn.cursor()
-        
         try:
+            cursor = conn.cursor()
+
             if symbol and interval:
                 table = self._get_table_name(symbol, interval)
                 cursor.execute(f"DROP TABLE IF EXISTS {table}")
                 print(f"✅ 已清空: {symbol} {interval}")
             elif symbol:
-                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?", 
+                cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name LIKE ?",
                               (f"klines_{symbol}_%",))
                 tables = cursor.fetchall()
                 for (table_name,) in tables:
@@ -510,11 +508,11 @@ class KlineFetcher:
                 for (table_name,) in tables:
                     cursor.execute(f"DROP TABLE IF EXISTS {table_name}")
                 print(f"✅ 已清空所有缓存")
-            
+
             conn.commit()
-            conn.close()
         except Exception as e:
             logger.error(f"[清空缓存] 失败: {e}")
+        finally:
             conn.close()
 
 
